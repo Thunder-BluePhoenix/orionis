@@ -13,7 +13,7 @@ Commands:
     orion export <id>   Export a trace to .otrace file
     orion import <file> Import a .otrace file into the engine
     orion diff <a> <b>  Open two traces in side-by-side diff view
-    orion watch         Auto-trace on file change + re-run
+    orion watch         Watch for file changes and re-run on change
     orion clean         Delete all stored traces
     orion config        Show current configuration
 """
@@ -284,10 +284,83 @@ def cmd_diff(args):
     webbrowser.open(url)
 
 
-def cmd_watch(_args):
-    """Watch current directory for changes and re-run the last command."""
-    _info("Watch mode — monitoring for file changes (Ctrl+C to stop)…")
-    _warn("Watch mode is a Phase 2 feature. Use orion start + run your tests for now.")
+def cmd_watch(args):
+    """Watch source files for changes and re-run a command on each change."""
+    import glob
+
+    cwd = Path.cwd()
+    cfg_path = cwd / ".orionis.json"
+
+    # Determine the command to re-run
+    watch_cmd = None
+    if args:
+        # orion watch python myscript.py
+        watch_cmd = args
+    elif cfg_path.exists():
+        try:
+            cfg = json.loads(cfg_path.read_text())
+            raw = cfg.get("watch_cmd")
+            if raw:
+                watch_cmd = raw if isinstance(raw, list) else raw.split()
+        except Exception:
+            pass
+
+    if not watch_cmd:
+        _err("No watch command specified.")
+        _info("Usage:  orion watch python my_script.py")
+        _info("   or:  set \"watch_cmd\" in .orionis.json")
+        sys.exit(1)
+
+    _print_banner()
+    _info(f"Watching  : {cwd}")
+    _info(f"Command   : {' '.join(watch_cmd)}")
+    _info("Ctrl+C to stop.")
+    print()
+
+    # File extensions to watch
+    PATTERNS = ["**/*.py", "**/*.go", "**/*.rs", "**/*.cpp", "**/*.cc", "**/*.c", "**/*.h", "**/*.hpp"]
+
+    def _scan_mtimes():
+        """Return dict: filepath → mtime for all source files."""
+        result = {}
+        for pat in PATTERNS:
+            for p in cwd.glob(pat):
+                try:
+                    result[str(p)] = p.stat().st_mtime
+                except OSError:
+                    pass
+        return result
+
+    def _run():
+        """Run the watched command in the current directory."""
+        print(f"\n{CYAN}→ Running: {' '.join(watch_cmd)}{RESET}")
+        try:
+            result = subprocess.run(watch_cmd, cwd=str(cwd))
+            if result.returncode == 0:
+                _ok("Exited OK")
+            else:
+                _err(f"Exited with code {result.returncode}")
+        except FileNotFoundError as e:
+            _err(f"Command not found: {e}")
+        except KeyboardInterrupt:
+            pass
+
+    mtimes = _scan_mtimes()
+    _run()  # run once immediately on start
+
+    try:
+        while True:
+            time.sleep(0.5)
+            new_mtimes = _scan_mtimes()
+            changed = [f for f, t in new_mtimes.items()
+                       if t != mtimes.get(f)]
+            if changed:
+                for f in changed:
+                    _info(f"Changed: {Path(f).relative_to(cwd)}")
+                mtimes = new_mtimes
+                _run()
+    except KeyboardInterrupt:
+        print(f"\n{YELLOW}Watch stopped.{RESET}")
 
 
 def cmd_clean(_args):

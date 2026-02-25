@@ -1,215 +1,539 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Orionis — Runtime Intelligence Engine</title>
   <style>
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
-    :root {
-      --bg:       #0d0f14;
-      --surface:  #151820;
-      --border:   #1e2330;
-      --accent:   #6c8aff;
-      --accent2:  #a78bfa;
-      --error:    #ff5f5f;
-      --ok:       #4ade80;
-      --text:     #e2e8f0;
-      --muted:    #64748b;
-      --font:     'Inter', system-ui, sans-serif;
+    *,
+    *::before,
+    *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
     }
 
-    body { background: var(--bg); color: var(--text); font-family: var(--font); font-size: 14px; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+    :root {
+      --bg: #0d0f14;
+      --surface: #151820;
+      --border: #1e2330;
+      --accent: #6c8aff;
+      --accent2: #a78bfa;
+      --error: #ff5f5f;
+      --ok: #4ade80;
+      --text: #e2e8f0;
+      --muted: #64748b;
+      --font: 'Inter', system-ui, sans-serif;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      font-size: 14px;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      overflow: hidden;
+    }
 
     /* ── Header ───────────────────────────────────────────────────────── */
-    header { display: flex; align-items: center; gap: 12px; padding: 0 20px; height: 52px; border-bottom: 1px solid var(--border); flex-shrink: 0; background: var(--surface); }
-    .logo  { font-size: 18px; font-weight: 700; letter-spacing: .5px; background: linear-gradient(135deg, var(--accent), var(--accent2)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
-    .tag   { font-size: 11px; color: var(--muted); background: var(--border); padding: 2px 8px; border-radius: 99px; }
-    .ws-dot{ width: 8px; height: 8px; border-radius: 50%; background: var(--muted); margin-left: auto; transition: background .3s; }
-    .ws-dot.live { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
-    .ws-label { font-size: 11px; color: var(--muted); }
+    header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 0 20px;
+      height: 52px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+      background: var(--surface);
+    }
+
+    .logo {
+      font-size: 18px;
+      font-weight: 700;
+      letter-spacing: .5px;
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      -webkit-background-clip: text;
+      background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .tag {
+      font-size: 11px;
+      color: var(--muted);
+      background: var(--border);
+      padding: 2px 8px;
+      border-radius: 99px;
+    }
+
+    .ws-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--muted);
+      margin-left: auto;
+      transition: background .3s;
+    }
+
+    .ws-dot.live {
+      background: var(--ok);
+      box-shadow: 0 0 6px var(--ok);
+    }
+
+    .ws-label {
+      font-size: 11px;
+      color: var(--muted);
+    }
 
     /* ── Layout ────────────────────────────────────────────────────────── */
-    .layout { display: grid; grid-template-columns: 300px 1fr 320px; flex: 1; overflow: hidden; }
-    .panel  { display: flex; flex-direction: column; border-right: 1px solid var(--border); overflow: hidden; }
-    .panel:last-child { border-right: none; }
-    .panel-header { padding: 12px 14px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .8px; color: var(--muted); border-bottom: 1px solid var(--border); flex-shrink: 0; display: flex; align-items: center; justify-content: space-between; }
-    .panel-body { flex: 1; overflow-y: auto; }
+    .layout {
+      display: grid;
+      grid-template-columns: 300px 1fr 320px;
+      flex: 1;
+      overflow: hidden;
+    }
+
+    .panel {
+      display: flex;
+      flex-direction: column;
+      border-right: 1px solid var(--border);
+      overflow: hidden;
+    }
+
+    .panel:last-child {
+      border-right: none;
+    }
+
+    .panel-header {
+      padding: 12px 14px;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: .8px;
+      color: var(--muted);
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    /* ── Search bar ─────────────────────────────────────────────────────── */
+    .search-bar {
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+
+    .search-bar input {
+      width: 100%;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 6px 10px;
+      color: var(--text);
+      font-size: 12px;
+      outline: none;
+    }
+
+    .search-bar input:focus {
+      border-color: var(--accent);
+    }
+
+    /* ── Diff banner ────────────────────────────────────────────────────── */
+    .diff-banner {
+      background: rgba(167, 139, 250, .1);
+      border-bottom: 1px solid rgba(167, 139, 250, .2);
+      padding: 8px 14px;
+      font-size: 11px;
+      color: var(--accent2);
+      flex-shrink: 0;
+      display: none;
+    }
+
+    .panel-body {
+      flex: 1;
+      overflow-y: auto;
+    }
 
     /* ── Trace List ─────────────────────────────────────────────────────── */
-    .trace-item { padding: 10px 14px; border-bottom: 1px solid var(--border); cursor: pointer; transition: background .15s; }
-    .trace-item:hover, .trace-item.active { background: rgba(108,138,255,.08); }
-    .trace-item .fn-name { font-weight: 500; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .trace-item .meta { display: flex; gap: 8px; margin-top: 4px; font-size: 11px; color: var(--muted); }
-    .badge { padding: 1px 6px; border-radius: 4px; font-size: 10px; font-weight: 600; }
-    .badge.error { background: rgba(255,95,95,.15); color: var(--error); }
-    .badge.ok    { background: rgba(74,222,128,.1); color: var(--ok); }
-    .lang-badge  { padding: 1px 6px; border-radius: 4px; font-size: 10px; border: 1px solid var(--border); color: var(--muted); }
+    .trace-item {
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--border);
+      cursor: pointer;
+      transition: background .15s;
+    }
+
+    .trace-item:hover,
+    .trace-item.active {
+      background: rgba(108, 138, 255, .08);
+    }
+
+    .trace-item .fn-name {
+      font-weight: 500;
+      font-size: 13px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .trace-item .meta {
+      display: flex;
+      gap: 8px;
+      margin-top: 4px;
+      font-size: 11px;
+      color: var(--muted);
+    }
+
+    .badge {
+      padding: 1px 6px;
+      border-radius: 4px;
+      font-size: 10px;
+      font-weight: 600;
+    }
+
+    .badge.error {
+      background: rgba(255, 95, 95, .15);
+      color: var(--error);
+    }
+
+    .badge.ok {
+      background: rgba(74, 222, 128, .1);
+      color: var(--ok);
+    }
+
+    .lang-badge {
+      padding: 1px 6px;
+      border-radius: 4px;
+      font-size: 10px;
+      border: 1px solid var(--border);
+      color: var(--muted);
+    }
 
     /* ── Timeline / Center ──────────────────────────────────────────────── */
-    .empty-state { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; gap: 10px; color: var(--muted); }
-    .empty-state .icon { font-size: 40px; opacity: .3; }
+    .empty-state {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      gap: 10px;
+      color: var(--muted);
+    }
+
+    .empty-state .icon {
+      font-size: 40px;
+      opacity: .3;
+    }
 
     /* Timeline slider */
-    .timeline-bar { padding: 12px 16px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
-    .timeline-bar label { font-size: 11px; color: var(--muted); display: flex; justify-content: space-between; margin-bottom: 6px; }
-    input[type=range] { width: 100%; accent-color: var(--accent); cursor: pointer; }
+    .timeline-bar {
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+
+    .timeline-bar label {
+      font-size: 11px;
+      color: var(--muted);
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 6px;
+    }
+
+    input[type=range] {
+      width: 100%;
+      accent-color: var(--accent);
+      cursor: pointer;
+    }
 
     /* Stack tree */
-    .stack-tree { padding: 8px; }
-    .span-node { margin-left: 12px; border-left: 2px solid var(--border); padding-left: 8px; margin-bottom: 2px; }
-    .span-node .span-header { display: flex; align-items: center; gap: 6px; padding: 5px 6px; border-radius: 5px; cursor: pointer; transition: background .15s; }
-    .span-node .span-header:hover { background: rgba(255,255,255,.04); }
-    .span-node.active-span .span-header { background: rgba(108,138,255,.12); border-left: 2px solid var(--accent); }
-    .span-fn { font-weight: 500; font-size: 12px; }
-    .span-time { font-size: 10px; color: var(--muted); margin-left: auto; }
-    .span-type { font-size: 9px; padding: 1px 5px; border-radius: 3px; background: var(--border); }
-    .span-type.exception { background: rgba(255,95,95,.2); color: var(--error); }
-    .span-type.enter { background: rgba(108,138,255,.15); color: var(--accent); }
-    .span-type.exit  { background: rgba(74,222,128,.1); color: var(--ok); }
+    .stack-tree {
+      padding: 8px;
+    }
+
+    .span-node {
+      margin-left: 12px;
+      border-left: 2px solid var(--border);
+      padding-left: 8px;
+      margin-bottom: 2px;
+    }
+
+    .span-node .span-header {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 6px;
+      border-radius: 5px;
+      cursor: pointer;
+      transition: background .15s;
+    }
+
+    .span-node .span-header:hover {
+      background: rgba(255, 255, 255, .04);
+    }
+
+    .span-node.active-span .span-header {
+      background: rgba(108, 138, 255, .12);
+      border-left: 2px solid var(--accent);
+    }
+
+    .span-fn {
+      font-weight: 500;
+      font-size: 12px;
+    }
+
+    .span-time {
+      font-size: 10px;
+      color: var(--muted);
+      margin-left: auto;
+    }
+
+    .span-type {
+      font-size: 9px;
+      padding: 1px 5px;
+      border-radius: 3px;
+      background: var(--border);
+    }
+
+    .span-type.exception {
+      background: rgba(255, 95, 95, .2);
+      color: var(--error);
+    }
+
+    .span-type.enter {
+      background: rgba(108, 138, 255, .15);
+      color: var(--accent);
+    }
+
+    .span-type.exit {
+      background: rgba(74, 222, 128, .1);
+      color: var(--ok);
+    }
 
     /* ── Locals Panel ───────────────────────────────────────────────────── */
-    .local-row { padding: 8px 14px; border-bottom: 1px solid var(--border); }
-    .local-name  { font-size: 11px; color: var(--accent); font-family: monospace; }
-    .local-type  { font-size: 10px; color: var(--muted); margin-left: 4px; }
-    .local-value { font-size: 12px; font-family: monospace; margin-top: 3px; word-break: break-all; color: var(--text); }
+    .local-row {
+      padding: 8px 14px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .local-name {
+      font-size: 11px;
+      color: var(--accent);
+      font-family: monospace;
+    }
+
+    .local-type {
+      font-size: 10px;
+      color: var(--muted);
+      margin-left: 4px;
+    }
+
+    .local-value {
+      font-size: 12px;
+      font-family: monospace;
+      margin-top: 3px;
+      word-break: break-all;
+      color: var(--text);
+    }
 
     /* ── Controls bar ───────────────────────────────────────────────────── */
-    .controls { padding: 8px 12px; border-top: 1px solid var(--border); display: flex; gap: 8px; flex-shrink: 0; background: var(--surface); }
-    button { background: var(--border); color: var(--text); border: none; padding: 6px 12px; border-radius: 6px; font-size: 12px; cursor: pointer; transition: background .15s; }
-    button:hover { background: #2a3045; }
-    button.primary { background: var(--accent); color: white; }
-    button.primary:hover { background: #5a79f0; }
-    button.danger { background: rgba(255,95,95,.15); color: var(--error); }
-    button.danger:hover { background: rgba(255,95,95,.25); }
+    .controls {
+      padding: 8px 12px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      gap: 8px;
+      flex-shrink: 0;
+      background: var(--surface);
+    }
+
+    button {
+      background: var(--border);
+      color: var(--text);
+      border: none;
+      padding: 6px 12px;
+      border-radius: 6px;
+      font-size: 12px;
+      cursor: pointer;
+      transition: background .15s;
+    }
+
+    button:hover {
+      background: #2a3045;
+    }
+
+    button.primary {
+      background: var(--accent);
+      color: white;
+    }
+
+    button.primary:hover {
+      background: #5a79f0;
+    }
+
+    button.danger {
+      background: rgba(255, 95, 95, .15);
+      color: var(--error);
+    }
+
+    button.danger:hover {
+      background: rgba(255, 95, 95, .25);
+    }
 
     /* Scrollbars */
-    ::-webkit-scrollbar { width: 5px; } ::-webkit-scrollbar-track { background: transparent; } ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 99px; }
+    ::-webkit-scrollbar {
+      width: 5px;
+    }
+
+    ::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    ::-webkit-scrollbar-thumb {
+      background: var(--border);
+      border-radius: 99px;
+    }
   </style>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 </head>
+
 <body>
 
-<!-- ── Header ─────────────────────────────────────────────────────────── -->
-<header>
-  <span class="logo">ORIONIS</span>
-  <span class="tag">Runtime Intelligence Engine</span>
-  <span class="tag" id="trace-count">0 traces</span>
-  <div style="display:flex;align-items:center;gap:6px;margin-left:auto">
-    <div class="ws-dot" id="ws-dot"></div>
-    <span class="ws-label" id="ws-label">Disconnected</span>
-  </div>
-</header>
-
-<!-- ── Main Layout ─────────────────────────────────────────────────────── -->
-<div class="layout">
-
-  <!-- Panel 1: Trace List -->
-  <div class="panel">
-    <div class="panel-header">
-      <span>Traces</span>
-      <button class="danger" onclick="clearAll()" style="padding:2px 8px;font-size:10px">Clear</button>
+  <!-- ── Header ─────────────────────────────────────────────────────────── -->
+  <header>
+    <span class="logo">ORIONIS</span>
+    <span class="tag">Runtime Intelligence Engine</span>
+    <span class="tag" id="trace-count">0 traces</span>
+    <div style="display:flex;align-items:center;gap:6px;margin-left:auto">
+      <div class="ws-dot" id="ws-dot"></div>
+      <span class="ws-label" id="ws-label">Disconnected</span>
     </div>
-    <div class="panel-body" id="trace-list">
-      <div class="empty-state">
-        <div class="icon">📡</div>
-        <span>Waiting for traces…</span>
-        <span style="font-size:11px">Start your app with the Orionis agent</span>
+  </header>
+
+  <!-- ── Main Layout ─────────────────────────────────────────────────────── -->
+  <div class="layout">
+
+    <!-- Panel 1: Trace List -->
+    <div class="panel">
+      <div class="panel-header">
+        <span>Traces</span>
+        <button class="danger" onclick="clearAll()" style="padding:2px 8px;font-size:10px">Clear</button>
+      </div>
+      <div class="search-bar">
+        <input type="text" id="search-input" placeholder="Filter by function, language…" oninput="renderTraceList()">
+      </div>
+      <div class="diff-banner" id="diff-banner"></div>
+      <div class="panel-body" id="trace-list">
+        <div class="empty-state">
+          <div class="icon">📡</div>
+          <span>Waiting for traces…</span>
+          <span style="font-size:11px">Start your app with the Orionis agent</span>
+        </div>
       </div>
     </div>
-  </div>
 
-  <!-- Panel 2: Stack Tree + Timeline -->
-  <div class="panel" style="border-right:none">
-    <div class="panel-header"><span>Execution Timeline</span></div>
-    <div class="timeline-bar" id="timeline-bar" style="display:none">
-      <label>
-        <span>Step</span>
-        <span id="step-label">0 / 0</span>
-      </label>
-      <input type="range" id="timeline-slider" min="0" value="0" oninput="onSlider(this.value)">
-    </div>
-    <div class="panel-body" id="stack-panel">
-      <div class="empty-state">
-        <div class="icon">🔭</div>
-        <span>Select a trace to explore</span>
+    <!-- Panel 2: Stack Tree + Timeline -->
+    <div class="panel" style="border-right:none">
+      <div class="panel-header"><span>Execution Timeline</span></div>
+      <div class="timeline-bar" id="timeline-bar" style="display:none">
+        <label>
+          <span>Step</span>
+          <span id="step-label">0 / 0</span>
+        </label>
+        <input type="range" id="timeline-slider" min="0" value="0" oninput="onSlider(this.value)">
+      </div>
+      <div class="panel-body" id="stack-panel">
+        <div class="empty-state">
+          <div class="icon">🔭</div>
+          <span>Select a trace to explore</span>
+        </div>
+      </div>
+      <div class="controls" id="replay-controls" style="display:none">
+        <button onclick="stepBack()">◀ Back</button>
+        <button onclick="togglePlay()" id="play-btn">▶ Play</button>
+        <button onclick="stepForward()">Forward ▶</button>
+        <button onclick="jumpToStart()">⏮ Start</button>
+        <button onclick="jumpToEnd()">End ⏭</button>
       </div>
     </div>
-    <div class="controls" id="replay-controls" style="display:none">
-      <button onclick="stepBack()">◀ Back</button>
-      <button onclick="togglePlay()" id="play-btn">▶ Play</button>
-      <button onclick="stepForward()">Forward ▶</button>
-      <button onclick="jumpToStart()">⏮ Start</button>
-      <button onclick="jumpToEnd()">End ⏭</button>
-    </div>
-  </div>
 
-  <!-- Panel 3: Locals / Variable Inspector -->
-  <div class="panel">
-    <div class="panel-header"><span>Variable Inspector</span></div>
-    <div class="panel-body" id="locals-panel">
-      <div class="empty-state">
-        <div class="icon">🔬</div>
-        <span>Select a frame</span>
+    <!-- Panel 3: Locals / Variable Inspector -->
+    <div class="panel">
+      <div class="panel-header"><span>Variable Inspector</span></div>
+      <div class="panel-body" id="locals-panel">
+        <div class="empty-state">
+          <div class="icon">🔬</div>
+          <span>Select a frame</span>
+        </div>
       </div>
     </div>
+
   </div>
 
-</div>
+  <script>
+    // ── State ─────────────────────────────────────────────────────────────────────
+    let traces = [];
+    let events = [];
+    let step = 0;
+    let playing = false;
+    let playTimer = null;
+    let activeId = null;
 
-<script>
-// ── State ─────────────────────────────────────────────────────────────────────
-let traces   = [];
-let events   = [];
-let step     = 0;
-let playing  = false;
-let playTimer= null;
-let activeId = null;
+    // ── WebSocket ─────────────────────────────────────────────────────────────────
+    function connectWs() {
+      const ws = new WebSocket(`ws://${location.host}/ws/live`);
+      const dot = document.getElementById('ws-dot');
+      const lbl = document.getElementById('ws-label');
+      ws.onopen = () => { dot.classList.add('live'); lbl.textContent = 'Live'; loadTraces(); };
+      ws.onclose = () => { dot.classList.remove('live'); lbl.textContent = 'Reconnecting…'; setTimeout(connectWs, 2000); };
+      ws.onmessage = () => loadTraces();
+    }
 
-// ── WebSocket ─────────────────────────────────────────────────────────────────
-function connectWs() {
-  const ws = new WebSocket(`ws://${location.host}/ws/live`);
-  const dot = document.getElementById('ws-dot');
-  const lbl = document.getElementById('ws-label');
-  ws.onopen  = () => { dot.classList.add('live'); lbl.textContent = 'Live'; loadTraces(); };
-  ws.onclose = () => { dot.classList.remove('live'); lbl.textContent = 'Reconnecting…'; setTimeout(connectWs, 2000); };
-  ws.onmessage = () => loadTraces();
-}
+    // ── API ───────────────────────────────────────────────────────────────────────
+    async function loadTraces() {
+      const res = await fetch('/api/traces');
+      traces = await res.json();
+      renderTraceList();
+    }
 
-// ── API ───────────────────────────────────────────────────────────────────────
-async function loadTraces() {
-  const res = await fetch('/api/traces');
-  traces = await res.json();
-  renderTraceList();
-}
+    async function loadTrace(id) {
+      const res = await fetch(`/api/traces/${id}`);
+      events = await res.json();
+      activeId = id;
+      step = 0;
+      renderTimeline();
+      renderStack();
+    }
 
-async function loadTrace(id) {
-  const res = await fetch(`/api/traces/${id}`);
-  events = await res.json();
-  activeId = id;
-  step = 0;
-  renderTimeline();
-  renderStack();
-}
+    async function clearAll() {
+      await fetch('/api/clear', { method: 'DELETE' });
+      traces = []; events = []; activeId = null;
+      renderTraceList();
+      resetCenter();
+    }
 
-async function clearAll() {
-  await fetch('/api/clear', { method: 'DELETE' });
-  traces = []; events = []; activeId = null;
-  renderTraceList();
-  resetCenter();
-}
+    // ── Render: Trace List ────────────────────────────────────────────────────────
+    function renderTraceList() {
+      const el = document.getElementById('trace-list');
+      document.getElementById('trace-count').textContent = `${traces.length} trace${traces.length !== 1 ? 's' : ''}`;
 
-// ── Render: Trace List ────────────────────────────────────────────────────────
-function renderTraceList() {
-  const el = document.getElementById('trace-list');
-  document.getElementById('trace-count').textContent = `${traces.length} trace${traces.length !== 1 ? 's' : ''}`;
-  if (!traces.length) {
-    el.innerHTML = `<div class="empty-state"><div class="icon">📡</div><span>Waiting for traces…</span></div>`;
-    return;
-  }
-  el.innerHTML = traces.map(t => `
+      // Apply search filter
+      const q = (document.getElementById('search-input')?.value || '').toLowerCase();
+      const visible = q
+        ? traces.filter(t =>
+          t.name.toLowerCase().includes(q) ||
+          t.language.toLowerCase().includes(q) ||
+          t.trace_id.toLowerCase().includes(q))
+        : traces;
+
+      if (!visible.length) {
+        el.innerHTML = `<div class="empty-state"><div class="icon">📡</div><span>${q ? 'No matches' : 'Waiting for traces…'}</span></div>`;
+        return;
+      }
+      el.innerHTML = visible.map(t => `
     <div class="trace-item ${t.trace_id === activeId ? 'active' : ''}" onclick="loadTrace('${t.trace_id}')">
       <div class="fn-name">${t.name}</div>
       <div class="meta">
@@ -219,31 +543,31 @@ function renderTraceList() {
         <span>${t.duration_ms != null ? t.duration_ms + ' ms' : '—'}</span>
       </div>
     </div>`).join('');
-}
+    }
 
-// ── Render: Timeline ──────────────────────────────────────────────────────────
-function renderTimeline() {
-  const bar = document.getElementById('timeline-bar');
-  const slider = document.getElementById('timeline-slider');
-  const controls = document.getElementById('replay-controls');
-  if (!events.length) { bar.style.display = 'none'; controls.style.display = 'none'; return; }
-  bar.style.display = '';
-  controls.style.display = '';
-  slider.max = events.length - 1;
-  slider.value = step;
-  document.getElementById('step-label').textContent = `${step + 1} / ${events.length}`;
-}
+    // ── Render: Timeline ──────────────────────────────────────────────────────────
+    function renderTimeline() {
+      const bar = document.getElementById('timeline-bar');
+      const slider = document.getElementById('timeline-slider');
+      const controls = document.getElementById('replay-controls');
+      if (!events.length) { bar.style.display = 'none'; controls.style.display = 'none'; return; }
+      bar.style.display = '';
+      controls.style.display = '';
+      slider.max = events.length - 1;
+      slider.value = step;
+      document.getElementById('step-label').textContent = `${step + 1} / ${events.length}`;
+    }
 
-// ── Render: Stack Tree ────────────────────────────────────────────────────────
-function renderStack() {
-  const panel = document.getElementById('stack-panel');
-  if (!events.length) { panel.innerHTML = `<div class="empty-state"><div class="icon">🔭</div><span>No events</span></div>`; return; }
+    // ── Render: Stack Tree ────────────────────────────────────────────────────────
+    function renderStack() {
+      const panel = document.getElementById('stack-panel');
+      if (!events.length) { panel.innerHTML = `<div class="empty-state"><div class="icon">🔭</div><span>No events</span></div>`; return; }
 
-  const visible = events.slice(0, step + 1);
-  const current = events[step];
+      const visible = events.slice(0, step + 1);
+      const current = events[step];
 
-  panel.innerHTML = `<div class="stack-tree">` +
-    visible.map((e, i) => `
+      panel.innerHTML = `<div class="stack-tree">` +
+        visible.map((e, i) => `
       <div class="span-node ${i === step ? 'active-span' : ''}" onclick="goTo(${i})">
         <div class="span-header">
           <span class="span-type ${typeClass(e.event_type)}">${shortType(e.event_type)}</span>
@@ -252,86 +576,125 @@ function renderStack() {
           <span class="span-time">${relTime(e.timestamp_ms)}</span>
         </div>
       </div>`).join('') +
-    `</div>`;
+        `</div>`;
 
-  renderLocals(current);
-  panel.scrollTop = panel.scrollHeight;
-}
+      renderLocals(current);
+      panel.scrollTop = panel.scrollHeight;
+    }
 
-// ── Render: Locals ────────────────────────────────────────────────────────────
-function renderLocals(event) {
-  const el = document.getElementById('locals-panel');
-  if (!event?.locals?.length) {
-    el.innerHTML = `<div class="local-row" style="color:var(--muted);font-size:12px">No variables captured for this frame</div>`;
-    return;
-  }
-  el.innerHTML = event.locals.map(l => `
+    // ── Render: Locals ────────────────────────────────────────────────────────────
+    function renderLocals(event) {
+      const el = document.getElementById('locals-panel');
+      if (!event?.locals?.length) {
+        el.innerHTML = `<div class="local-row" style="color:var(--muted);font-size:12px">No variables captured for this frame</div>`;
+        return;
+      }
+      el.innerHTML = event.locals.map(l => `
     <div class="local-row">
       <div><span class="local-name">${l.name}</span><span class="local-type">${l.type_name}</span></div>
       <div class="local-value">${escHtml(l.value)}</div>
     </div>`).join('');
-}
+    }
 
-// ── Playback ──────────────────────────────────────────────────────────────────
-function onSlider(v)     { step = +v; stopPlay(); renderTimeline(); renderStack(); }
-function goTo(i)         { step = i; stopPlay(); renderTimeline(); renderStack(); }
-function stepBack()      { if (step > 0) { step--; renderTimeline(); renderStack(); } }
-function stepForward()   { if (step < events.length - 1) { step++; renderTimeline(); renderStack(); } }
-function jumpToStart()   { step = 0; renderTimeline(); renderStack(); }
-function jumpToEnd()     { step = events.length - 1; renderTimeline(); renderStack(); }
+    // ── Playback ──────────────────────────────────────────────────────────────────
+    function onSlider(v) { step = +v; stopPlay(); renderTimeline(); renderStack(); }
+    function goTo(i) { step = i; stopPlay(); renderTimeline(); renderStack(); }
+    function stepBack() { if (step > 0) { step--; renderTimeline(); renderStack(); } }
+    function stepForward() { if (step < events.length - 1) { step++; renderTimeline(); renderStack(); } }
+    function jumpToStart() { step = 0; renderTimeline(); renderStack(); }
+    function jumpToEnd() { step = events.length - 1; renderTimeline(); renderStack(); }
 
-function togglePlay() {
-  if (playing) { stopPlay(); return; }
-  playing = true;
-  document.getElementById('play-btn').textContent = '⏸ Pause';
-  playTimer = setInterval(() => {
-    if (step >= events.length - 1) { stopPlay(); return; }
-    step++;
-    renderTimeline();
-    renderStack();
-  }, 300);
-}
+    function togglePlay() {
+      if (playing) { stopPlay(); return; }
+      playing = true;
+      document.getElementById('play-btn').textContent = '⏸ Pause';
+      playTimer = setInterval(() => {
+        if (step >= events.length - 1) { stopPlay(); return; }
+        step++;
+        renderTimeline();
+        renderStack();
+      }, 300);
+    }
 
-function stopPlay() {
-  playing = false;
-  clearInterval(playTimer);
-  const btn = document.getElementById('play-btn');
-  if (btn) btn.textContent = '▶ Play';
-}
+    function stopPlay() {
+      playing = false;
+      clearInterval(playTimer);
+      const btn = document.getElementById('play-btn');
+      if (btn) btn.textContent = '▶ Play';
+    }
 
-function resetCenter() {
-  document.getElementById('stack-panel').innerHTML = `<div class="empty-state"><div class="icon">🔭</div><span>Select a trace to explore</span></div>`;
-  document.getElementById('locals-panel').innerHTML = `<div class="empty-state"><div class="icon">🔬</div><span>Select a frame</span></div>`;
-  document.getElementById('timeline-bar').style.display = 'none';
-  document.getElementById('replay-controls').style.display = 'none';
-}
+    function resetCenter() {
+      document.getElementById('stack-panel').innerHTML = `<div class="empty-state"><div class="icon">🔭</div><span>Select a trace to explore</span></div>`;
+      document.getElementById('locals-panel').innerHTML = `<div class="empty-state"><div class="icon">🔬</div><span>Select a frame</span></div>`;
+      document.getElementById('timeline-bar').style.display = 'none';
+      document.getElementById('replay-controls').style.display = 'none';
+    }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-let t0 = null;
-function relTime(ms) {
-  if (!t0) t0 = ms;
-  const d = ms - t0;
-  return d < 1000 ? `+${d}ms` : `+${(d/1000).toFixed(2)}s`;
-}
+    // ── Helpers ───────────────────────────────────────────────────────────────────
+    let t0 = null;
+    function relTime(ms) {
+      if (!t0) t0 = ms;
+      const d = ms - t0;
+      return d < 1000 ? `+${d}ms` : `+${(d / 1000).toFixed(2)}s`;
+    }
 
-function typeClass(t) {
-  if (!t) return '';
-  const tl = t.toLowerCase();
-  if (tl.includes('exception')) return 'exception';
-  if (tl.includes('exit'))      return 'exit';
-  return 'enter';
-}
+    function typeClass(t) {
+      if (!t) return '';
+      const tl = t.toLowerCase();
+      if (tl.includes('exception')) return 'exception';
+      if (tl.includes('exit')) return 'exit';
+      return 'enter';
+    }
 
-function shortType(t) {
-  if (!t) return '?';
-  const map = { FunctionEnter:'ENTER', FunctionExit:'EXIT', Exception:'EXCEPTION', AsyncSpawn:'SPAWN', AsyncResume:'RESUME', HttpRequest:'HTTP→', HttpResponse:'←HTTP' };
-  return map[t] || t;
-}
+    function shortType(t) {
+      if (!t) return '?';
+      const map = { FunctionEnter: 'ENTER', FunctionExit: 'EXIT', Exception: 'EXCEPTION', AsyncSpawn: 'SPAWN', AsyncResume: 'RESUME', HttpRequest: 'HTTP→', HttpResponse: '←HTTP' };
+      return map[t] || t;
+    }
 
-function escHtml(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+    function escHtml(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
 
-// ── Boot ──────────────────────────────────────────────────────────────────────
-connectWs();
-</script>
+    // ── URL Param Handling ────────────────────────────────────────────────────────
+    // Supports: ?trace=<id>  and  ?diff=<id-a>,<id-b>
+
+    async function handleUrlParams() {
+      const params = new URLSearchParams(location.search);
+
+      // ?diff=a,b — show diff banner and load first trace
+      const diffParam = params.get('diff');
+      if (diffParam) {
+        const [idA, idB] = diffParam.split(',').map(s => s.trim());
+        const banner = document.getElementById('diff-banner');
+        if (banner) {
+          banner.style.display = '';
+          banner.textContent = `⚡ Diff mode: ${idA?.slice(0, 8)}… vs ${idB?.slice(0, 8)}… (full diff view in Phase 2)`;
+        }
+        if (idA) await loadTrace(idA);
+        return;
+      }
+
+      // ?trace=<id> — auto-select trace (used by orion replay)
+      const replayId = params.get('trace');
+      if (replayId) {
+        // Retry a few times — traces load asynchronously
+        for (let attempt = 0; attempt < 10; attempt++) {
+          if (traces.find(t => t.trace_id === replayId)) {
+            await loadTrace(replayId);
+            // Scroll that item into view
+            const items = document.querySelectorAll('.trace-item');
+            items.forEach(el => { if (el.textContent.includes(replayId.slice(0, 8))) el.scrollIntoView(); });
+            return;
+          }
+          await new Promise(r => setTimeout(r, 300));
+        }
+        console.warn('[Orionis] Trace not found for replay:', replayId);
+      }
+    }
+
+    // ── Boot ──────────────────────────────────────────────────────────────────────
+    connectWs();
+    setTimeout(handleUrlParams, 600);  // run after initial WebSocket load completes
+  </script>
 </body>
+
 </html>

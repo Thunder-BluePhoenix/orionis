@@ -8,7 +8,10 @@ setup(
     packages=find_packages(),
     python_requires=">=3.9",
     install_requires=[],   # zero dependencies — stdlib only
-    entry_points={},
+    entry_points={
+        # Auto-discovered by pytest — no conftest.py needed.
+        "pytest11": ["orionis = orionis.pytest_plugin"],
+    },
     classifiers=[
         "Programming Language :: Python :: 3",
         "License :: OSI Approved :: Apache Software License",

@@ -23,6 +23,7 @@ pub struct LocalVar {
 }
 
 /// Environment snapshot captured at the start of a trace session.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EnvSnapshot {
     pub os: String,
@@ -62,6 +63,7 @@ pub enum AgentLanguage {
 }
 
 /// A complete trace — a logical unit of execution (e.g. one request, one test, one crash).
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Trace {
     pub trace_id: Uuid,

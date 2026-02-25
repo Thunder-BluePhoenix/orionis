@@ -4,7 +4,7 @@ use anyhow::Result;
 use rusqlite::{Connection, params};
 use uuid::Uuid;
 
-use crate::models::{AgentLanguage, Trace, TraceSummary, TraceEvent};
+use crate::models::{AgentLanguage, TraceSummary, TraceEvent};
 
 pub type DbHandle = Arc<Mutex<Connection>>;
 
