@@ -1,0 +1,7 @@
+orion.py
+setup.py
+orionis_cli.egg-info/PKG-INFO
+orionis_cli.egg-info/SOURCES.txt
+orionis_cli.egg-info/dependency_links.txt
+orionis_cli.egg-info/entry_points.txt
+orionis_cli.egg-info/top_level.txt

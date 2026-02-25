@@ -1,0 +1,7 @@
+setup.py
+orionis/__init__.py
+orionis/agent.py
+orionis_agent.egg-info/PKG-INFO
+orionis_agent.egg-info/SOURCES.txt
+orionis_agent.egg-info/dependency_links.txt
+orionis_agent.egg-info/top_level.txt

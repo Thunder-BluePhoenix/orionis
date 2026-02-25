@@ -1,0 +1,462 @@
+# Orionis — Product & Engineering Plan
+
+> **Product name:** Orionis
+> **Type:** Standalone runtime intelligence engine
+> **Model:** Open-source first, solo long-term project
+> **Start date:** 2026
+
+---
+
+## Vision Statement
+
+Orionis is an intelligent runtime observability and time-travel debugging engine that lets developers **see, replay, and understand** their systems across services — in real time and in history.
+
+---
+
+## The Four Core Pillars
+
+### Pillar 1 — Intelligent Stack Trace Visualizer
+Transform raw stack traces into a navigable **visual execution graph**:
+- Variable states at each frame
+- Async chain linking
+- Highlighted root cause guess
+- AI explanation panel
+
+### Pillar 2 — Runtime Time-Travel Debugger
+Record and replay execution like Git for code — but for runtime:
+- Step backward/forward through execution
+- Inspect state at any timestamp
+- Replay failed requests
+- Compare two execution runs
+
+### Pillar 3 — Live Dependency Graph Inspector
+Interactive graph showing:
+- Service-to-service calls
+- Module-to-module dependencies
+- DB interactions, event emissions, background jobs
+- Click a node → see latency, error rate, recent failures
+
+### Pillar 4 — Cross-Service Request Tracer
+Full trace timeline for requests flowing across services:
+- `Frontend → API Gateway → Auth → Order → Payment → DB`
+- Latency breakdown per service
+- State snapshot at the point of failure
+
+---
+
+## Architecture
+
+### Three-Layer Design
+
+```
+┌─────────────────────────────┐
+│  Orionis Agent (SDK Layer)  │  Python / Go / Rust / C++
+│  Captures execution events  │
+└─────────────┬───────────────┘
+              │ gRPC / TCP
+┌─────────────▼───────────────┐
+│  Orionis Engine (Rust Core) │  Event ingestion, storage,
+│  Replay, Analysis, Graph    │  replay engine, graph builder
+└─────────────┬───────────────┘
+              │ WebSocket + HTTP
+┌─────────────▼───────────────┐
+│  Orionis Dashboard (UI)     │  HTML + CSS + Vanilla JS
+│  Timeline, Stack, Locals    │  D3.js for graph viz
+└─────────────────────────────┘
+```
+
+---
+
+## Tech Stack
+
+| Component | Technology | Reason |
+|---|---|---|
+| Core Engine | **Rust** + Tokio + Axum | Memory safe, high-perf, great concurrency, FFI |
+| Storage (v1) | **SQLite** (embedded) | Simple, ship-fast, local-first |
+| Storage (v2+) | **RocksDB** or ClickHouse | Time-indexed, scalable |
+| Protocol (v1) | **HTTP JSON** | Fast to develop, correct first |
+| Protocol (v2+) | **gRPC (tonic)** | High-performance production |
+| Python Agent | **sys.setprofile()** | Function-level global tracing, lower overhead |
+| Dashboard | **HTML + CSS + Vanilla JS + D3.js** | No framework bloat |
+| Live updates | **WebSockets** | Real-time trace streaming |
+| License | **Apache 2.0** or **MIT** | Enterprise-friendly open source |
+
+---
+
+## Event Model (Core Data Structure)
+
+```rust
+struct TraceEvent {
+    trace_id: Uuid,
+    span_id: Uuid,
+    parent_span_id: Option<Uuid>,
+    timestamp: u64,
+    event_type: EventType,
+    function_name: String,
+    file: String,
+    line: u32,
+    locals: Option<SerializedState>,
+}
+
+enum EventType {
+    FunctionEnter,
+    FunctionExit,
+    Exception,
+}
+```
+
+This is the foundation. Every feature is built on top of this event stream.
+
+---
+
+## Tracing Mode Decision
+
+**Choice: Global Tracing Mode (B)**
+- Use `sys.setprofile()` for whole-process tracing
+- Filter noise via module inclusion/exclusion lists:
+  ```python
+  orionis.start(
+      include_modules=["myapp"],
+      exclude_modules=["asyncio", "logging"]
+  )
+  ```
+- Path-based filtering: trace `/project/` only, ignore `/usr/lib/python/`
+
+### Variable Capture Policy (v1)
+- Shallow copy of locals only
+- Max string length: 200 chars
+- Max list length: 50 items
+- Max depth: 2 levels
+- `repr()` fallback for complex objects
+
+---
+
+## Tracing Modes
+
+| Mode | Behavior | Use Case |
+|---|---|---|
+| **DEV MODE** | Full capture, all locals, deep tracing | Local development |
+| **SAFE MODE** | Function calls only, no locals, sampling | Staging |
+| **ERROR MODE** | Lightweight always, full capture on exception | **Production** |
+
+> **Smart Production Strategy:** lightweight trace always → exception raised → escalate to full capture → persist that trace only.
+> Low overhead. Rich failure data. Enterprise-grade design.
+
+---
+
+## Repository Structure
+
+```
+orionis/
+ ├── orionis-engine/          # Rust core engine
+ │    ├── src/
+ │    └── Cargo.toml
+ │
+ ├── orionis-python/          # Python agent SDK
+ │    ├── orionis/
+ │    └── setup.py
+ │
+ ├── dashboard/               # Frontend UI
+ │    ├── index.html
+ │    ├── app.js
+ │    └── styles.css
+ │
+ └── docs/                    # Documentation
+```
+
+---
+
+## Dashboard Routes
+
+| Route | Purpose |
+|---|---|
+| `/` | Main UI |
+| `/api/traces` | List all traces |
+| `/api/trace/{id}` | Fetch single trace |
+| `/ws/live` | WebSocket live stream |
+
+**Dashboard panels:**
+- **Left**: Trace list (searchable, filterable)
+- **Center**: Timeline slider (time-travel control)
+- **Right**: Stack tree view
+- **Bottom**: Locals/variable viewer
+
+---
+
+## Phased Build Plan
+
+### Phase 1 — Foundation: All 4 Agents + CLI (Months 1–6)
+**Goal: Ship a working local runtime intelligence engine with all 4 language agents from Day 1.**
+
+> All four language agents — Python, Go, Rust, C++ — are built simultaneously. No phasing of languages. This is non-negotiable.
+
+| Month | Deliverable |
+|---|---|
+| Month 1 | Rust engine core — event ingestion, SQLite storage, WebSocket broadcaster, HTTP server |
+| Month 2 | Python agent — `sys.setprofile()`, global tracing, module filter, variable shallow capture |
+| Month 3 | Go agent — middleware wrappers, goroutine-aware context propagation, panic interceptors |
+| Month 4 | Rust agent — native instrumentation macros, FFI event bridge to Orionis engine |
+| Month 5 | C++ agent — RAII-based instrumentation, macro tracing, exception hooks, signal capture |
+| Month 6 | `orion` CLI + UI + test integration — ship **v0.1** |
+
+**`orion` CLI (Day 1 commands):**
+```
+orion init                            # Auto-detect language, scaffold agent config in project
+orion start                          # Start the Orionis engine daemon
+orion stop                           # Stop the engine
+orion status                         # Show engine status + active traces
+orion replay <trace-id>              # Replay a specific trace in the UI
+orion list                           # List all captured traces
+orion export <trace-id>              # Export trace to .otrace file
+orion import <file.otrace>           # Import and load a shared trace
+orion diff <trace-id-1> <trace-id-2> # Side-by-side execution diff
+orion watch                          # Auto-capture trace on file change + re-run
+orion clean                          # Clear all stored traces
+orion config                         # Show/edit configuration
+```
+
+**v0.1 Scope (exact):**
+- ✅ Rust engine (single binary, local, SQLite)
+- ✅ Python tracing agent — global mode, module filter, variable snapshot
+- ✅ Go tracing agent — goroutine-aware, middleware, panic capture
+- ✅ Rust tracing agent — macro-based native instrumentation
+- ✅ C++ tracing agent — RAII instrumentation, exception hooks
+- ✅ `orion init` — one-command setup, auto-detects language, scaffolds agent config
+- ✅ `orion` CLI with start / stop / replay / list / export / import / diff / watch
+- ✅ Panic/crash zero-config auto-detection — Rust panics, Go panics, C++ signals, Python exceptions auto-caught with NO setup needed beyond `orion start`
+- ✅ Environment snapshot — capture env vars, OS info, config values at trace start (solves "works on my machine" forever)
+- ✅ Test framework auto-capture — `pytest`, `cargo test`, `go test` failures auto-traced
+- ✅ Trace export/import — `.otrace` portable file format for sharing failures
+- ✅ Dashboard UI — stack tree, timeline slider, variable panel, replay controls
+- ✅ DEV / SAFE / ERROR tracing modes
+- ❌ No AI yet
+- ❌ No cross-service graph yet
+- ❌ No distributed tracing yet
+- ❌ No gRPC yet (HTTP JSON for now)
+
+---
+
+### Phase 2 — Cross-Service + Developer Power Features (Months 7–11)
+**Goal: Make Orionis multi-service aware. Add the power features devs demand.**
+
+| Month | Deliverable |
+|---|---|
+| Month 7 | Cross-service trace ID propagation — W3C TraceContext header support across all 4 agents |
+| Month 8 | Live service dependency graph — interactive D3 node map, latency + error rate overlays |
+| Month 9 | Flamegraph overlay — performance flame graph layered over the execution tree |
+| Month 10 | HTTP request replay — re-fire the exact HTTP request that triggered a failure |
+| Month 11 | Async/concurrent execution visualizer — goroutines, Tokio tasks, Python asyncio shown as parallel lanes |
+
+**v0.2 Scope:**
+- ✅ Cross-service trace stitching via propagated trace ID headers
+- ✅ Interactive service dependency graph (D3)
+- ✅ Flamegraph view on execution tree
+- ✅ HTTP request replay (capture request context → re-fire)
+- ✅ Async/concurrent execution lanes in timeline
+- ✅ Protocol upgrade: HTTP JSON → gRPC (tonic)
+- ✅ Storage upgrade: SQLite → RocksDB
+- ✅ OpenTelemetry compatibility — import/export OTEL traces (works alongside existing infra)
+- ✅ `orion replay`, `orion diff`, `orion watch` fully stable
+- ❌ No AI yet
+- ❌ No DB query lens yet
+- ❌ No cluster yet
+
+---
+
+### Phase 3 — AI Intelligence + Deep Analysis (Months 12–16)
+**Goal: Make Orionis the smartest tool in the developer's arsenal.**
+
+| Month | Deliverable |
+|---|---|
+| Month 12 | AI trace summarizer — LLM compresses 2000-line trace into 4 bullet root-cause points |
+| Month 13 | AI root cause suggester — cluster similar failures, detect recurrence + regression patterns |
+| Month 14 | Database query lens — SQL queries + timing embedded in trace timeline, slow query highlighting |
+| Month 15 | Diff mode — side-by-side visual execution diff across two traces or two releases |
+| Month 16 | Production hardening — benchmark agent overhead across all 4 languages, full test suite |
+
+**v0.3 Scope:**
+- ✅ AI summarizer (pluggable LLM backend — local or cloud)
+- ✅ AI root cause suggester with failure clustering
+- ✅ DB query lens (SQL + timing + slow query detection in trace)
+- ✅ `orion diff` — full visual execution diff between any two traces
+- ✅ Benchmarked agent overhead: < 3% CPU in SAFE MODE
+- ✅ Full automated test suite across all 4 agents
+- ❌ No enterprise auth yet
+- ❌ No multi-node cluster yet
+
+---
+
+### Phase 4 — Enterprise + Collaboration + Scale (Months 17–21)
+**Goal: Make Orionis team-ready and enterprise-deployable at scale.**
+
+| Month | Deliverable |
+|---|---|
+| Month 17 | Multi-node Orionis cluster — horizontal scaling for high-volume trace ingestion |
+| Month 18 | ClickHouse backend — high-performance time-indexed analytics at scale |
+| Month 19 | Enterprise auth — SSO/OIDC, role-based access control, team namespaces |
+| Month 20 | Team collaboration — trace annotations, comments per frame, assign trace to dev, share link |
+| Month 21 | CI/CD integration — GitHub Actions + GitLab CI plugin; auto-replay failed test traces from pipeline |
+
+**v1.0 Scope:**
+- ✅ Horizontally scalable multi-node engine cluster
+- ✅ ClickHouse time-indexed analytics backend
+- ✅ SSO / OIDC / RBAC enterprise auth
+- ✅ Multi-tenant team dashboards (per-team trace isolation)
+- ✅ Team annotations — comment, tag, assign per trace frame
+- ✅ CI/CD replay — failed CI trace replay with `orion replay`
+- ✅ On-prem Docker + Kubernetes deployment manifests
+- ✅ Stable public API + protocol spec published
+- ✅ Full documentation site
+
+---
+
+### Phase 5 — Final Product: Orionis Intelligence Platform (Months 22–27)
+**Goal: The complete vision. Orionis as the developer operating system layer.**
+
+| Feature | Description |
+|---|---|
+| Auto code patch suggestions | AI analyzes trace + variable state → proposes exact code fix |
+| Security anomaly detection | Detects runtime intrusion patterns, abnormal execution paths |
+| Regression detection | Auto-compare traces across releases — detect newly broken paths |
+| Performance optimization AI | AI identifies hot paths, suggests algorithmic improvements from flamegraph data |
+| Production crash auto-replay | Replay real production failure in isolated sandbox with full fidelity |
+| Failure simulation | Inject failure states into replay to test system resilience |
+| Memory leak detection | Track heap allocation diffs per span across traces |
+| Orionis Cloud | Fully managed hosted version — SaaS tier (free / paid / enterprise) |
+| Plugin ecosystem | Public SDK for community agents, analyzers, exporters, and IDE integrations |
+
+**v2.0 — Final Product State:**
+- ✅ All 4 language agents: Python, Go, Rust, C++ — stable, maintained, benchmarked
+- ✅ `orion` CLI — complete command suite for all workflows
+- ✅ Full time-travel debugging — state replay at any timestamp, step backward/forward
+- ✅ Cross-service distributed trace with causal chain visualization
+- ✅ Flamegraph + async lane + DB query lens all unified in one UI
+- ✅ AI layer: summarizer + root cause + code patch suggestions
+- ✅ Security + regression + memory anomaly detection
+- ✅ HTTP request replay + failure simulation sandbox
+- ✅ Team collaboration: annotations, assignments, shareable trace links
+- ✅ Enterprise cluster (Docker / Kubernetes) with ClickHouse + RBAC + SSO
+- ✅ CI/CD integration (GitHub Actions, GitLab)
+- ✅ OpenTelemetry import/export compatibility
+- ✅ Open-source core (Apache 2.0) + commercial enterprise tier
+- ✅ Active open-source community + plugin ecosystem
+- ✅ Competes directly with Datadog APM, Sentry, Jaeger — at deeper execution layer
+
+---
+
+## Complete Phase Summary
+
+| Phase | Months | Version | Key Unlock |
+|---|---|---|---|
+| Phase 1 — Foundation | 1–6 | v0.1 | All 4 agents Day 1, `orion` CLI, test integration, trace export |
+| Phase 2 — Cross-Service | 7–11 | v0.2 | Cross-service graph, flamegraph, HTTP replay, async viz, OTEL |
+| Phase 3 — AI Intelligence | 12–16 | v0.3 | AI summarizer + root cause, DB lens, diff mode, benchmarked |
+| Phase 4 — Enterprise | 17–21 | v1.0 | Cluster, ClickHouse, SSO/RBAC, team collab, CI/CD |
+| Phase 5 — Final Product | 22–27 | v2.0 | Full platform, AI patches, crash replay, cloud, plugin ecosystem |
+
+---
+
+## Long-Term Expansion (Post v2.0)
+
+| Feature | Description |
+|---|---|
+| Orionis Cloud | Fully managed SaaS hosted version |
+| Plugin marketplace | Community-built trace analyzers and exporters |
+| Language agent: Node.js | Full JS/TS ecosystem support |
+| Language agent: JVM | Java, Kotlin, Scala support via JVM bytecode instrumentation |
+| WebAssembly agent | Trace WASM execution in browser and edge environments |
+| IDE integrations | VS Code + JetBrains plugins for inline trace viewing |
+
+---
+
+## Monetization Strategy
+
+| Tier | Model |
+|---|---|
+| Free | Local dev version (full open source) |
+| Paid | Production cluster mode |
+| Enterprise | Observability suite + SLA + on-prem license |
+| Premium | AI-enhanced tier |
+
+---
+
+## Open-Source Strategy
+
+- **License:** Apache 2.0 (enterprise-friendly, no copyleft restrictions)
+- Make core engine clean and modular
+- Publish protocol specification publicly
+- Write strong documentation from v0.1
+- Ship working demo early — developers contribute when:
+  - The idea is clear
+  - The architecture is clean
+  - The code is readable
+
+---
+
+## Engineering Principles
+
+```
+Correctness > Performance (v1)
+Simplicity > Scalability (v1)
+Stability > Features (v1)
+```
+
+Do NOT build early:
+- ❌ AI integration (Phase 3+)
+- ❌ Distributed tracing (Phase 2+)
+- ❌ Kubernetes / enterprise auth (Phase 4)
+- ❌ Multi-tenant dashboards (Phase 4)
+- ❌ Cloud / SaaS (Phase 5)
+
+**Ship Phase 1 first. All 4 agents. The CLI. The UI. Correct and clean.**
+
+---
+
+## What Makes Orionis Elite Even at v0.1
+
+Even without AI. Even without cross-service graphs.
+
+If Orionis delivers at v0.1:
+- ✅ All 4 language agents working on Day 1
+- ✅ `orion init` — zero friction setup, language auto-detected
+- ✅ Panic/crash auto-caught with zero config — just `orion start`
+- ✅ Environment snapshot at every trace start
+- ✅ Full-process execution tree
+- ✅ Variable snapshots per frame
+- ✅ Time slider replay with step-back
+- ✅ `orion` CLI that just works
+- ✅ Auto-capture test failures from pytest / cargo test / go test
+- ✅ Export a `.otrace` file and share a bug with a teammate in seconds
+
+**That is already something no existing dev tool provides in one package.**
+
+That alone is rare. That alone is worth shipping.
+
+---
+
+## What We Are Not Forgetting (Also Planned)
+
+Things confirmed for correct phases but not in Phase 1:
+
+| Feature | Phase |
+|---|---|
+| `orion init` zero-friction setup | Phase 1 (Day 1) |
+| Panic/crash zero-config auto-detection | Phase 1 (Day 1) |
+| Environment snapshot at trace start | Phase 1 (Day 1) |
+| OpenTelemetry import/export compatibility | Phase 2 |
+| Async/concurrent execution lanes (goroutines, asyncio, Tokio) | Phase 2 |
+| HTTP request replay | Phase 2 |
+| Flamegraph overlay on execution tree | Phase 2 |
+| AI trace summarizer + root cause | Phase 3 |
+| Database query lens (SQL timing in trace) | Phase 3 |
+| Diff mode — two executions side by side | Phase 3 |
+| Memory heap allocation tracking per span | Phase 5 |
+| Team annotations + trace sharing | Phase 4 |
+| Production crash sandbox replay | Phase 5 |
+| Security / regression anomaly detection | Phase 5 |
+| IDE plugins — VS Code + JetBrains | Post v2.0 |
+| Node.js / JVM / WASM agents | Post v2.0 |
+
+---
+
+*Product name: Orionis | Plan version: 2.0 | Date: 2026-02-24*
