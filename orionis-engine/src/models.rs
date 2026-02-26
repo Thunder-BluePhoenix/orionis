@@ -12,6 +12,7 @@ pub enum EventType {
     AsyncResume,
     HttpRequest,
     HttpResponse,
+    DbQuery,
 }
 
 /// A serialized local variable captured at a trace point.
@@ -50,6 +51,24 @@ pub struct TraceEvent {
     pub error_message: Option<String>,
     pub duration_us: Option<u64>,   // microseconds, set on FunctionExit
     pub language: AgentLanguage,
+    pub thread_id: Option<String>,
+    pub http_request: Option<HttpRequest>,
+    pub db_query: Option<DbQuery>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct HttpRequest {
+    pub method: String,
+    pub url: String,
+    pub headers: std::collections::HashMap<String, String>,
+    pub body: Option<Vec<u8>>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DbQuery {
+    pub query: String,
+    pub driver: String,
+    pub duration_us: u64,
 }
 
 /// Which language/runtime sent this event.
@@ -60,6 +79,7 @@ pub enum AgentLanguage {
     Go,
     Rust,
     Cpp,
+    Unknown,
 }
 
 /// A complete trace — a logical unit of execution (e.g. one request, one test, one crash).
@@ -86,6 +106,9 @@ pub struct TraceSummary {
     pub has_error: bool,
     pub language: AgentLanguage,
     pub event_count: usize,
+    pub thread_ids: Vec<String>,
+    pub ai_cluster_key: Option<String>,
+    pub ai_summary: Option<String>,
 }
 
 /// Incoming payload from an agent — either a single event or a batch.

@@ -8,6 +8,12 @@ use std::collections::VecDeque;
 
 pub use uuid::Uuid;
 
+// ── Generated Proto ─────────────────────────────────────────────────────────
+
+pub mod proto {
+    tonic::include_proto!("orionis");
+}
+
 // ── Types (mirror engine models) ──────────────────────────────────────────────
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -40,24 +46,110 @@ pub struct TraceEvent {
     pub error_message: Option<String>,
     pub duration_us: Option<u64>,
     pub language: String,
+    pub thread_id: String,
+}
+
+// ── Senders ──────────────────────────────────────────────────────────────────
+
+trait Sender: Send + Sync {
+    fn send(&self, events: Vec<TraceEvent>);
+}
+
+struct HttpSender {
+    url: String,
+}
+
+impl Sender for HttpSender {
+    fn send(&self, events: Vec<TraceEvent>) {
+        let url = format!("{}/api/ingest", self.url);
+        let body = serde_json::to_vec(&events).unwrap_or_default();
+        let _ = ureq::post(&url)
+            .set("Content-Type", "application/json")
+            .send_bytes(&body);
+    }
+}
+
+struct GrpcSender {
+    endpoint: String,
+}
+
+impl Sender for GrpcSender {
+    fn send(&self, events: Vec<TraceEvent>) {
+        let endpoint = self.endpoint.clone();
+        // Since we are in a library that might be used in async or sync contexts, 
+        // we spawn a blocking task or use a handle if available.
+        // For simplicity in the agent, we fire and forget via a small internal runtime or thread.
+        thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+            rt.block_on(async move {
+                let mut client = match proto::ingest_client::IngestClient::connect(endpoint).await {
+                    Ok(c) => c,
+                    Err(_) => return,
+                };
+
+                let mut pb_events = Vec::new();
+                for ev in events {
+                    let mut pb_ev = proto::TraceEvent {
+                        trace_id: ev.trace_id,
+                        span_id: ev.span_id,
+                        parent_span_id: ev.parent_span_id.unwrap_or_default(),
+                        timestamp_ms: ev.timestamp_ms,
+                        event_type: match ev.event_type {
+                            EventType::FunctionEnter => proto::EventType::EventFunctionEnter as i32,
+                            EventType::FunctionExit => proto::EventType::EventFunctionExit as i32,
+                            EventType::Exception => proto::EventType::EventException as i32,
+                        },
+                        function_name: ev.function_name,
+                        module: ev.module,
+                        file: ev.file,
+                        line: ev.line,
+                        locals: ev.locals.unwrap_or_default().into_iter().map(|l| proto::LocalVar {
+                            name: l.name,
+                            value: l.value,
+                            type_name: l.type_name,
+                        }).collect(),
+                        error_message: ev.error_message.unwrap_or_default(),
+                        duration_us: ev.duration_us,
+                        language: proto::AgentLanguage::LangRust as i32,
+                    };
+                    pb_events.push(pb_ev);
+                }
+
+                let stream = tokio_stream::iter(pb_events);
+                let _ = client.stream_events(stream).await;
+            });
+        });
+    }
 }
 
 // ── Agent ─────────────────────────────────────────────────────────────────────
 
 pub struct Agent {
     pub engine_url: String,
-    pub trace_id: String,
+    pub grpc_url: String,
+    pub use_grpc: bool,
+    pub trace_id: Mutex<String>,
     batch: Mutex<VecDeque<TraceEvent>>,
+    sender: Box<dyn Sender>,
 }
 
 static GLOBAL: OnceLock<Arc<Agent>> = OnceLock::new();
 
 impl Agent {
-    fn new(engine_url: &str) -> Arc<Self> {
+    fn new(engine_url: &str, grpc_url: &str, use_grpc: bool) -> Arc<Self> {
+        let sender: Box<dyn Sender> = if use_grpc {
+            Box::new(GrpcSender { endpoint: grpc_url.to_string() })
+        } else {
+            Box::new(HttpSender { url: engine_url.to_string() })
+        };
+
         Arc::new(Self {
             engine_url: engine_url.to_string(),
-            trace_id: Uuid::new_v4().to_string(),
+            grpc_url: grpc_url.to_string(),
+            use_grpc,
+            trace_id: Mutex::new(Uuid::new_v4().to_string()),
             batch: Mutex::new(VecDeque::new()),
+            sender,
         })
     }
 
@@ -72,22 +164,19 @@ impl Agent {
             b.drain(..).collect()
         };
         if events.is_empty() { return; }
-        let url = format!("{}/api/ingest", self.engine_url);
-        let body = serde_json::to_vec(&events).unwrap_or_default();
-        let _ = ureq::post(&url)
-            .set("Content-Type", "application/json")
-            .send_bytes(&body);
+        self.sender.send(events);
     }
 }
 
 /// Initialise the Orionis Rust agent. Call this once at the start of main().
 pub fn start(engine_url: &str) {
-    let agent = Agent::new(engine_url);
+    let grpc_url = "http://localhost:7701";
+    let agent = Agent::new(engine_url, grpc_url, true);
     let _ = GLOBAL.set(agent.clone());
     install_panic_hook(agent.clone());
     start_sender(agent);
     send_env_snapshot(engine_url);
-    eprintln!("[Orionis] Rust agent started — engine: {}", engine_url);
+    eprintln!("[Orionis] Rust agent started — engine: {} | grpc: {}", engine_url, grpc_url);
 }
 
 pub fn agent() -> Option<&'static Arc<Agent>> {
@@ -102,7 +191,7 @@ pub fn install_panic_hook(ag: Arc<Agent>) {
             .unwrap_or_else(|| ("unknown".into(), 0));
 
         ag.enqueue(TraceEvent {
-            trace_id: ag.trace_id.clone(),
+            trace_id: ag.trace_id.lock().unwrap().clone(),
             span_id: Uuid::new_v4().to_string(),
             parent_span_id: None,
             timestamp_ms: now_ms(),
@@ -115,6 +204,7 @@ pub fn install_panic_hook(ag: Arc<Agent>) {
             error_message: Some(msg),
             duration_us: None,
             language: "rust".into(),
+            thread_id: format!("{:?}", thread::current().id()),
         });
         ag.flush();
     }));
@@ -160,7 +250,7 @@ impl SpanGuard {
         let span_id = Uuid::new_v4().to_string();
         if let Some(ag) = GLOBAL.get() {
             ag.enqueue(TraceEvent {
-                trace_id: ag.trace_id.clone(),
+                trace_id: ag.trace_id.lock().unwrap().clone(),
                 span_id: span_id.clone(),
                 parent_span_id: None,
                 timestamp_ms: now_ms(),
@@ -173,6 +263,7 @@ impl SpanGuard {
                 error_message: None,
                 duration_us: None,
                 language: "rust".into(),
+                thread_id: format!("{:?}", thread::current().id()),
             });
         }
         Self { span_id, fn_name: fn_name.into(), module: module.into(), file: file.into(), line, start: Instant::now() }
@@ -184,7 +275,7 @@ impl Drop for SpanGuard {
         let dur = self.start.elapsed().as_micros() as u64;
         if let Some(ag) = GLOBAL.get() {
             ag.enqueue(TraceEvent {
-                trace_id: ag.trace_id.clone(),
+                trace_id: ag.trace_id.lock().unwrap().clone(),
                 span_id: Uuid::new_v4().to_string(),
                 parent_span_id: Some(self.span_id.clone()),
                 timestamp_ms: now_ms(),
@@ -197,6 +288,7 @@ impl Drop for SpanGuard {
                 error_message: None,
                 duration_us: Some(dur),
                 language: "rust".into(),
+                thread_id: format!("{:?}", thread::current().id()),
             });
         }
     }

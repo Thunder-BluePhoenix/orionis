@@ -24,10 +24,20 @@ import platform
 import atexit
 from typing import Optional, List, Dict, Any
 
+try:
+    import grpc
+    from .proto import orionis_pb2 as pb2
+    from .proto import orionis_pb2_grpc as pb2_grpc
+    HAS_GRPC = True
+except (ImportError, SyntaxError):
+    HAS_GRPC = False
+
 # ── Configuration ─────────────────────────────────────────────────────────────
 
 class Config:
     engine_url: str = "http://localhost:7700"
+    grpc_url: str = "localhost:7701"
+    use_grpc: bool = True
     include_modules: List[str] = []
     exclude_modules: List[str] = ["_pytest", "pytest", "orionis", "importlib", "encodings", "codecs", "abc"]
     mode: str = "dev"          # dev | safe | error
@@ -42,6 +52,7 @@ _active = False
 _lock = threading.Lock()
 _batch: List[dict] = []
 _sender_thread: Optional[threading.Thread] = None
+_sender_instance: Any = None
 
 # ── Environment Snapshot ──────────────────────────────────────────────────────
 
@@ -122,6 +133,11 @@ def _get_trace_id() -> str:
         _thread_local.span_stack = []
     return _thread_local.trace_id
 
+def _set_trace_id(tid: str):
+    _thread_local.trace_id = tid
+    if not hasattr(_thread_local, "span_stack"):
+        _thread_local.span_stack = []
+
 def _push_span(span_id: str):
     if not hasattr(_thread_local, "span_stack"):
         _thread_local.span_stack = []
@@ -140,7 +156,7 @@ def _current_parent() -> Optional[str]:
 
 def _make_event(event_type: str, frame, error_msg: Optional[str] = None, duration_us: Optional[int] = None) -> dict:
     span_id = str(uuid.uuid4())
-    capture_locals = event_type in ("function_enter", "exception") and _cfg.mode == "dev"
+    capture_locals = event_type in ("function_enter", "exception") and _cfg.mode == "dev" and frame is not None
 
     return {
         "trace_id": _get_trace_id(),
@@ -148,14 +164,18 @@ def _make_event(event_type: str, frame, error_msg: Optional[str] = None, duratio
         "parent_span_id": _current_parent(),
         "timestamp_ms": int(time.time() * 1000),
         "event_type": event_type,
-        "function_name": frame.f_code.co_name,
-        "module": frame.f_globals.get("__name__", ""),
-        "file": frame.f_code.co_filename,
-        "line": frame.f_lineno,
+        "function_name": frame.f_code.co_name if frame else "manual",
+        "module": frame.f_globals.get("__name__", "") if frame else "manual",
+        "file": frame.f_code.co_filename if frame else "manual",
+        "line": frame.f_lineno if frame else 0,
         "locals": _capture_locals(frame) if capture_locals else None,
         "error_message": error_msg,
         "duration_us": duration_us,
         "language": "python",
+        "thread_id": str(threading.get_ident()),
+        "http_request": None,
+        "trace_headers": None,
+        "db_query": None,
     }
 
 # ── Profile Hook ─────────────────────────────────────────────────────────────
@@ -201,26 +221,170 @@ def _sender_loop():
         _flush()
     _flush()  # final flush on stop
 
+# ── Senders ──────────────────────────────────────────────────────────────────
+
+class HttpSender:
+    def send(self, events: List[dict]):
+        payload = json.dumps(events).encode()
+        try:
+            req = urllib.request.Request(
+                f"{_cfg.engine_url}/api/ingest",
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            res = urllib.request.urlopen(req, timeout=3)
+            # print(f"[Orionis DEBUG] Engine returned HTTP {res.getcode()}")
+        except Exception as e:
+            print(f"[Orionis] HTTP Sender Error: {e}")
+
+class GrpcSender:
+    def __init__(self, target: str):
+        self.target = target
+        self.channel = grpc.insecure_channel(target)
+        self.stub = pb2_grpc.IngestStub(self.channel)
+
+    def _map_event(self, ev: dict) -> Any:
+        # Map JSON dict to protobuf message
+        locals_pb = []
+        if ev.get("locals"):
+            for l in ev["locals"]:
+                locals_pb.append(pb2.LocalVar(
+                    name=l["name"],
+                    value=l["value"],
+                    type_name=l["type_name"]
+                ))
+        
+        event_type_map = {
+            "function_enter": pb2.EVENT_FUNCTION_ENTER,
+            "function_exit": pb2.EVENT_FUNCTION_EXIT,
+            "exception": pb2.EVENT_EXCEPTION,
+            "async_spawn": pb2.EVENT_ASYNC_SPAWN,
+            "async_resume": pb2.EVENT_ASYNC_RESUME,
+            "http_request": pb2.EVENT_HTTP_REQUEST,
+            "http_response": pb2.EVENT_HTTP_RESPONSE,
+        }
+
+        lang_map = {
+            "python": pb2.LANG_PYTHON,
+            "go": pb2.LANG_GO,
+            "rust": pb2.LANG_RUST,
+            "cpp": pb2.LANG_CPP,
+        }
+
+        return pb2.TraceEvent(
+            trace_id=ev["trace_id"],
+            span_id=ev["span_id"],
+            parent_span_id=ev.get("parent_span_id") or "",
+            timestamp_ms=ev["timestamp_ms"],
+            event_type=event_type_map.get(ev["event_type"], pb2.EVENT_UNKNOWN),
+            function_name=ev["function_name"],
+            module=ev["module"],
+            file=ev["file"],
+            line=ev["line"],
+            locals=locals_pb,
+            error_message=ev.get("error_message") or "",
+            duration_us=ev.get("duration_us"),
+            language=lang_map.get(ev["language"], pb2.LANG_UNKNOWN),
+            thread_id=ev.get("thread_id") or "",
+            http_request=pb2.HttpRequest(
+                method=ev["http_request"]["method"],
+                url=ev["http_request"]["url"],
+                headers=ev["http_request"]["headers"],
+                body=ev["http_request"].get("body") or b""
+            ) if ev.get("http_request") else None,
+            db_query=pb2.DbQuery(
+                query=ev["db_query"]["query"],
+                driver=ev["db_query"]["driver"],
+                duration_us=ev["db_query"]["duration_us"]
+            ) if ev.get("db_query") else None
+        )
+
+    def send(self, events: List[dict]):
+        try:
+            def event_generator():
+                for ev in events:
+                    yield self._map_event(ev)
+            
+            self.stub.StreamEvents(event_generator(), timeout=5)
+        except Exception as e:
+            print(f"[Orionis] gRPC Sender Error: {e}")
+
 def _flush():
+    global _sender_instance
     with _lock:
         if not _batch:
             return
         to_send = _batch.copy()
         _batch.clear()
 
-    print(f"[Orionis DEBUG] Flushing {len(to_send)} events")
-    payload = json.dumps(to_send).encode()
-    try:
-        req = urllib.request.Request(
-            f"{_cfg.engine_url}/api/ingest",
-            data=payload,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        res = urllib.request.urlopen(req, timeout=3)
-        print(f"[Orionis DEBUG] Engine returned HTTP {res.getcode()}")
-    except Exception as e:
-        print(f"[Orionis] Error sending payload: {e}")
+    if not _sender_instance:
+        return
+
+    _sender_instance.send(to_send)
+
+# ── Trace Propagation ─────────────────────────────────────────────────────────
+
+def capture_http_request(method: str, url: str, headers: dict = None, body: bytes = None):
+    """Manually capture an HTTP request event for Replay."""
+    if not _active:
+        return
+    ev = _make_event("http_request", None)
+    ev["http_request"] = {
+        "method": method,
+        "url": url,
+        "headers": headers or {},
+        "body": body
+    }
+    _enqueue(ev)
+
+def capture_query(query: str, driver: str = "sql", duration_us: int = 0):
+    """Manually capture a database query event."""
+    if not _active:
+        return
+    ev = _make_event("db_query", None)
+    ev["db_query"] = {
+        "query": query,
+        "driver": driver,
+        "duration_us": duration_us
+    }
+    _enqueue(ev)
+
+def inject_trace_headers(headers: dict):
+    """Add W3C traceparent headers to a dictionary of headers."""
+    tid = _get_trace_id().replace("-", "")
+    headers["traceparent"] = f"00-{tid}-0000000000000000-01"
+
+def extract_trace_headers(headers: dict):
+    """Extract trace ID from W3C traceparent headers and set the current context."""
+    tp = headers.get("traceparent") or headers.get("HTTP_TRACEPARENT")
+    if tp and isinstance(tp, str):
+        parts = tp.split("-")
+        if len(parts) >= 2:
+            raw_tid = parts[1]
+            if len(raw_tid) == 32:
+                # Format to UUID string with hyphens
+                tid = f"{raw_tid[0:8]}-{raw_tid[8:12]}-{raw_tid[12:16]}-{raw_tid[16:20]}-{raw_tid[20:32]}"
+                _set_trace_id(tid)
+
+class WSGIMiddleware:
+    """WSGI Middleware for Orionis trace extraction."""
+    def __init__(self, app):
+        self.app = app
+
+    def __call__(self, environ, start_response):
+        if not _active:
+            return self.app(environ, start_response)
+            
+        tid_before = getattr(_thread_local, "trace_id", None)
+        extract_trace_headers(environ)
+        tid_after = getattr(_thread_local, "trace_id", None)
+        
+        # If no trace ID was extracted and we didn't have one, start fresh
+        if tid_before == tid_after:
+            reset_trace()
+            
+        return self.app(environ, start_response)
 
 # ── Panic / Exception Handler ─────────────────────────────────────────────────
 
@@ -260,6 +424,8 @@ def start(
     exclude_modules: List[str] = [],
     mode: str = "dev",
     engine_url: str = "http://localhost:7700",
+    grpc_url: str = "localhost:7701",
+    use_grpc: bool = True
 ):
     """
     Start the Orionis global tracing agent.
@@ -270,12 +436,19 @@ def start(
         mode: "dev" (full capture) | "safe" (no locals) | "error" (only on exception)
         engine_url: URL of the running Orionis engine
     """
-    global _active, _sender_thread
+    global _active, _sender_thread, _sender_instance
 
     _cfg.include_modules = include_modules
     _cfg.exclude_modules = _cfg.exclude_modules + exclude_modules
     _cfg.mode = mode
     _cfg.engine_url = engine_url
+    _cfg.grpc_url = grpc_url
+    _cfg.use_grpc = use_grpc and HAS_GRPC
+
+    if _cfg.use_grpc:
+        _sender_instance = GrpcSender(_cfg.grpc_url)
+    else:
+        _sender_instance = HttpSender()
 
     # Send environment snapshot
     try:

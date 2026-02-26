@@ -87,12 +87,60 @@
       color: var(--muted);
     }
 
+    /* AI Toggle */
+    .ai-switch {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-left: 16px;
+      font-size: 11px;
+      color: var(--muted);
+      cursor: pointer;
+    }
+
+    .ai-switch input {
+      display: none;
+    }
+
+    .switch-track {
+      width: 28px;
+      height: 14px;
+      background: var(--border);
+      border-radius: 20px;
+      position: relative;
+      transition: background .3s;
+    }
+
+    .switch-thumb {
+      width: 10px;
+      height: 10px;
+      background: #fff;
+      border-radius: 50%;
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      transition: transform .3s;
+    }
+
+    input:checked+.switch-track {
+      background: var(--accent2);
+    }
+
+    input:checked+.switch-track .switch-thumb {
+      transform: translateX(14px);
+    }
+
     /* ── Layout ────────────────────────────────────────────────────────── */
     .layout {
       display: grid;
       grid-template-columns: 300px 1fr 320px;
       flex: 1;
       overflow: hidden;
+    }
+
+    .layout.diff-mode {
+      grid-template-columns: 300px 1fr 1fr 0px;
+      /* Hide locals in diff mode or adjust */
     }
 
     .panel {
@@ -118,6 +166,12 @@
       display: flex;
       align-items: center;
       justify-content: space-between;
+    }
+
+    .panel-header .active-tab {
+      color: var(--accent);
+      border-bottom: 2px solid var(--accent);
+      padding-bottom: 2px;
     }
 
     /* ── Search bar ─────────────────────────────────────────────────────── */
@@ -280,6 +334,11 @@
       border-left: 2px solid var(--accent);
     }
 
+    .span-node.diverged .span-header {
+      border-left: 2px solid var(--error) !important;
+      background: rgba(255, 95, 95, .08);
+    }
+
     .span-fn {
       font-weight: 500;
       font-size: 12px;
@@ -311,6 +370,19 @@
     .span-type.exit {
       background: rgba(74, 222, 128, .1);
       color: var(--ok);
+    }
+
+    .span-type.db {
+      background: rgba(255, 171, 0, .15);
+      color: #ffab00;
+    }
+
+    .span-thread {
+      font-size: 9px;
+      color: var(--muted);
+      border: 1px solid var(--border);
+      padding: 0 4px;
+      border-radius: 4px;
     }
 
     /* ── Locals Panel ───────────────────────────────────────────────────── */
@@ -395,9 +467,27 @@
       background: var(--border);
       border-radius: 99px;
     }
+
+    /* SQL Highlighting */
+    .sql-key {
+      color: #ff79c6;
+      font-weight: bold;
+    }
+
+    .sql-str {
+      color: #f1fa8c;
+    }
+
+    .sql-num {
+      color: #bd93f9;
+    }
+
+    .sql-fun {
+      color: #50fa7b;
+    }
   </style>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <script src="https://d3js.org/d3.v7.min.js"></script>
 </head>
 
 <body>
@@ -407,10 +497,16 @@
     <span class="logo">ORIONIS</span>
     <span class="tag">Runtime Intelligence Engine</span>
     <span class="tag" id="trace-count">0 traces</span>
-    <div style="display:flex;align-items:center;gap:6px;margin-left:auto">
-      <div class="ws-dot" id="ws-dot"></div>
-      <span class="ws-label" id="ws-label">Disconnected</span>
+    <div class="ws-dot" id="ws-dot"></div>
+    <span class="ws-label" id="ws-label">Disconnected</span>
     </div>
+    <label class="ai-switch" title="Connect/Disconnect Orionis AI">
+      <span>AI Intelligence</span>
+      <input type="checkbox" id="ai-toggle" onchange="toggleAI(this.checked)">
+      <div class="switch-track">
+        <div class="switch-thumb"></div>
+      </div>
+    </label>
   </header>
 
   <!-- ── Main Layout ─────────────────────────────────────────────────────── -->
@@ -435,9 +531,17 @@
       </div>
     </div>
 
-    <!-- Panel 2: Stack Tree + Timeline -->
-    <div class="panel" style="border-right:none">
-      <div class="panel-header"><span>Execution Timeline</span></div>
+    <!-- Panel 2: Stack Tree + Timeline (Left/Primary) -->
+    <div class="panel" id="primary-panel" style="border-right:none">
+      <div class="panel-header">
+        <div style="display:flex;gap:12px">
+          <span style="cursor:pointer" id="tab-timeline" class="active-tab"
+            onclick="switchTab('timeline')">Timeline</span>
+          <span style="cursor:pointer" id="tab-flame" onclick="switchTab('flame')">Flamegraph</span>
+          <span style="cursor:pointer" id="tab-graph" onclick="switchTab('graph')">Service Graph</span>
+          <span style="cursor:pointer" id="tab-clusters" onclick="switchTab('clusters')">Failure Clusters</span>
+        </div>
+      </div>
       <div class="timeline-bar" id="timeline-bar" style="display:none">
         <label>
           <span>Step</span>
@@ -451,18 +555,45 @@
           <span>Select a trace to explore</span>
         </div>
       </div>
+
+      <div class="panel-body" id="graph-panel" style="display:none;position:relative">
+        <svg id="graph-svg" style="width:100%;height:100%"></svg>
+        <div id="graph-tooltip"
+          style="position:absolute;background:var(--surface);border:1px solid var(--border);padding:6px;border-radius:4px;font-size:11px;pointer-events:none;opacity:0;z-index:10">
+        </div>
+      </div>
+
+      <div class="panel-body" id="flame-panel" style="display:none;padding:16px">
+        <div id="flame-container" style="width:100%"></div>
+      </div>
+
+      <div class="panel-body" id="clusters-panel" style="display:none;padding:16px">
+        <div id="clusters-container"></div>
+      </div>
       <div class="controls" id="replay-controls" style="display:none">
         <button onclick="stepBack()">◀ Back</button>
         <button onclick="togglePlay()" id="play-btn">▶ Play</button>
         <button onclick="stepForward()">Forward ▶</button>
-        <button onclick="jumpToStart()">⏮ Start</button>
-        <button onclick="jumpToEnd()">End ⏭</button>
       </div>
     </div>
 
+    <!-- Panel 2.5: (Right/Secondary) - Only in Diff Mode -->
+    <div class="panel" id="secondary-panel" style="display:none;border-left:1px solid var(--border)">
+      <div class="panel-header"><span>Comparison Trace</span></div>
+      <div class="timeline-bar" id="timeline-bar-2">
+        <label><span>Step</span><span id="step-label-2">0 / 0</span></label>
+        <input type="range" id="timeline-slider-2" min="0" value="0" oninput="onSlider2(this.value)">
+      </div>
+      <div class="panel-body" id="stack-panel-2"></div>
+    </div>
+
     <!-- Panel 3: Locals / Variable Inspector -->
-    <div class="panel">
-      <div class="panel-header"><span>Variable Inspector</span></div>
+    <div class="panel" id="locals-panel-container">
+      <div class="panel-header"><span>Intelligence & Context</span></div>
+      <div class="ai-panel" id="ai-panel">
+        <div class="ai-title">✨ ORIONIS AI INSIGHT</div>
+        <div class="ai-summary" id="ai-summary">Analyzing trace patterns...</div>
+      </div>
       <div class="panel-body" id="locals-panel">
         <div class="empty-state">
           <div class="icon">🔬</div>
@@ -481,6 +612,44 @@
     let playing = false;
     let playTimer = null;
     let activeId = null;
+    let currentTab = 'timeline';
+    let diffMode = false;
+    let diffEvents = [];
+    let diffStep = 0;
+    let diffActiveId = null;
+    let divergenceIndex = -1;
+    let aiEnabled = localStorage.getItem('aiEnabled') === 'true';
+
+    // Initialize UI
+    window.addEventListener('DOMContentLoaded', () => {
+      document.getElementById('ai-toggle').checked = aiEnabled;
+      if (activeId) loadAISummary(activeId);
+    });
+
+    function toggleAI(enabled) {
+      aiEnabled = enabled;
+      localStorage.setItem('aiEnabled', enabled);
+      if (activeId) loadAISummary(activeId);
+      else document.getElementById('ai-panel').classList.remove('active');
+    }
+
+    async function loadAISummary(id) {
+      const panel = document.getElementById('ai-panel');
+      const summaryEl = document.getElementById('ai-summary');
+      if (!aiEnabled) {
+        panel.classList.remove('active');
+        return;
+      }
+      panel.classList.add('active');
+      summaryEl.textContent = 'Thinking...';
+      try {
+        const res = await fetch(`/api/ai/summarize/${id}`);
+        const data = await res.json();
+        summaryEl.innerHTML = `<p>${data.summary}</p><p style="margin-top:8px;font-size:11px;color:var(--muted)"><b>Rec:</b> ${data.recommendation}</p>`;
+      } catch (e) {
+        summaryEl.textContent = 'AI analysis failed.';
+      }
+    }
 
     // ── WebSocket ─────────────────────────────────────────────────────────────────
     function connectWs() {
@@ -504,8 +673,48 @@
       events = await res.json();
       activeId = id;
       step = 0;
+      loadAISummary(id);
+      if (diffMode) renderDiff(); // Just update primary side
+      else {
+        renderTimeline();
+        renderStack();
+      }
+    }
+
+    async function loadDiff(id) {
+      const res = await fetch(`/api/traces/${id}`);
+      diffEvents = await res.json();
+      diffActiveId = id;
+      diffStep = 0;
+      diffMode = true;
+      document.querySelector('.layout').classList.add('diff-mode');
+      document.getElementById('secondary-panel').style.display = '';
+      calculateDivergence();
+      renderDiff();
+    }
+
+    function calculateDivergence() {
+      if (!diffMode || !events.length || !diffEvents.length) {
+        divergenceIndex = -1;
+        return;
+      }
+      const minLen = Math.min(events.length, diffEvents.length);
+      for (let i = 0; i < minLen; i++) {
+        if (events[i].function_name !== diffEvents[i].function_name ||
+          events[i].module !== diffEvents[i].module ||
+          events[i].event_type !== diffEvents[i].event_type) {
+          divergenceIndex = i;
+          return;
+        }
+      }
+      divergenceIndex = minLen < Math.max(events.length, diffEvents.length) ? minLen : -1;
+    }
+
+    function renderDiff() {
       renderTimeline();
       renderStack();
+      renderTimeline2();
+      renderStack2();
     }
 
     async function clearAll() {
@@ -513,6 +722,13 @@
       traces = []; events = []; activeId = null;
       renderTraceList();
       resetCenter();
+    }
+
+    async function replayRequest(spanId) {
+      const res = await fetch(`/api/replay/${spanId}`, { method: 'POST' });
+      const msg = await res.text();
+      alert(msg);
+      loadTraces();
     }
 
     // ── Render: Trace List ────────────────────────────────────────────────────────
@@ -535,7 +751,10 @@
       }
       el.innerHTML = visible.map(t => `
     <div class="trace-item ${t.trace_id === activeId ? 'active' : ''}" onclick="loadTrace('${t.trace_id}')">
-      <div class="fn-name">${t.name}</div>
+      <div style="display:flex; justify-content:space-between">
+        <div class="fn-name">${t.name}</div>
+        <button class="badge" style="background:var(--border);color:var(--muted);padding:0 4px" onclick="event.stopPropagation(); loadDiff('${t.trace_id}')">Diff</button>
+      </div>
       <div class="meta">
         <span class="badge ${t.has_error ? 'error' : 'ok'}">${t.has_error ? '✕ Error' : '✓ OK'}</span>
         <span class="lang-badge">${t.language}</span>
@@ -567,15 +786,21 @@
       const current = events[step];
 
       panel.innerHTML = `<div class="stack-tree">` +
-        visible.map((e, i) => `
-      <div class="span-node ${i === step ? 'active-span' : ''}" onclick="goTo(${i})">
+        visible.map((e, i) => {
+          const isDiverged = diffMode && divergenceIndex !== -1 && i >= divergenceIndex;
+          return `
+      <div class="span-node ${i === step ? 'active-span' : ''} ${isDiverged ? 'diverged' : ''}" onclick="goTo(${i})">
         <div class="span-header">
           <span class="span-type ${typeClass(e.event_type)}">${shortType(e.event_type)}</span>
           <span class="span-fn">${e.function_name}</span>
+          ${e.thread_id ? `<span class="span-thread">T:${e.thread_id}</span>` : ''}
+          ${e.http_request ? `<button class="badge" style="background:var(--accent);color:white;padding:0 4px" onclick="event.stopPropagation(); replayRequest('${e.span_id}')">Replay</button>` : ''}
           <span style="font-size:10px;color:var(--muted)">${e.file}:${e.line}</span>
+          ${e.db_query ? `<div style="margin-top:6px;padding:8px;background:rgba(0,0,0,0.2);border-radius:4px;font-family:monospace;font-size:11px;border-left:2px solid #ffab00">${renderSql(e.db_query.query)} <span style="color:var(--muted);margin-left:8px">[${e.db_query.driver}]</span></div>` : ''}
           <span class="span-time">${relTime(e.timestamp_ms)}</span>
         </div>
-      </div>`).join('') +
+      </div>`;
+        }).join('') +
         `</div>`;
 
       renderLocals(current);
@@ -597,12 +822,264 @@
     }
 
     // ── Playback ──────────────────────────────────────────────────────────────────
-    function onSlider(v) { step = +v; stopPlay(); renderTimeline(); renderStack(); }
+    function onSlider(v) {
+      step = +v;
+      renderTimeline(); renderStack();
+      if (diffMode && diffEvents.length > step) {
+        diffStep = step; renderTimeline2(); renderStack2();
+      }
+    }
+    function onSlider2(v) { diffStep = +v; renderTimeline2(); renderStack2(); }
+
+    function renderTimeline2() {
+      const slider = document.getElementById('timeline-slider-2');
+      slider.max = diffEvents.length - 1;
+      slider.value = diffStep;
+      document.getElementById('step-label-2').textContent = `${diffStep + 1} / ${diffEvents.length}`;
+    }
+
+    function renderStack2() {
+      const panel = document.getElementById('stack-panel-2');
+      const visible = diffEvents.slice(0, diffStep + 1);
+      panel.innerHTML = `<div class="stack-tree">` +
+        visible.map((e, i) => {
+          const isDiverged = diffMode && divergenceIndex !== -1 && i >= divergenceIndex;
+          return `
+            <div class="span-node ${i === diffStep ? 'active-span' : ''} ${isDiverged ? 'diverged' : ''}">
+                <div class="span-header">
+                    <span class="span-type ${typeClass(e.event_type)}">${shortType(e.event_type)}</span>
+                    <span class="span-fn">${e.function_name}</span>
+                </div>
+            </div>`;
+        }).join('') + `</div>`;
+    }
+
     function goTo(i) { step = i; stopPlay(); renderTimeline(); renderStack(); }
     function stepBack() { if (step > 0) { step--; renderTimeline(); renderStack(); } }
     function stepForward() { if (step < events.length - 1) { step++; renderTimeline(); renderStack(); } }
     function jumpToStart() { step = 0; renderTimeline(); renderStack(); }
     function jumpToEnd() { step = events.length - 1; renderTimeline(); renderStack(); }
+
+    // ── Service Graph ─────────────────────────────────────────────────────────────
+    function switchTab(tab) {
+      currentTab = tab;
+      document.getElementById('tab-timeline').className = tab === 'timeline' ? 'active-tab' : '';
+      document.getElementById('tab-flame').className = tab === 'flame' ? 'active-tab' : '';
+      document.getElementById('tab-graph').className = tab === 'graph' ? 'active-tab' : '';
+      document.getElementById('tab-clusters').className = tab === 'clusters' ? 'active-tab' : '';
+
+      document.getElementById('stack-panel').style.display = tab === 'timeline' ? '' : 'none';
+      document.getElementById('timeline-bar').style.display = (tab === 'timeline' || tab === 'flame') && events.length ? '' : 'none';
+      document.getElementById('replay-controls').style.display = (tab === 'timeline' || tab === 'flame') && events.length ? '' : 'none';
+
+      document.getElementById('graph-panel').style.display = tab === 'graph' ? '' : 'none';
+      document.getElementById('flame-panel').style.display = tab === 'flame' ? '' : 'none';
+      document.getElementById('clusters-panel').style.display = tab === 'clusters' ? '' : 'none';
+
+      if (tab === 'graph') loadGraph();
+      if (tab === 'flame') renderFlamegraph();
+      if (tab === 'clusters') loadClusters();
+    }
+
+    async function loadClusters() {
+      const res = await fetch('/api/clusters');
+      const clusters = await res.json();
+      renderClusters(clusters);
+    }
+
+    function renderClusters(clusters) {
+      const el = document.getElementById('clusters-container');
+      if (!clusters.length) {
+        el.innerHTML = `<div class="empty-state">No failure clusters detected yet</div>`;
+        return;
+      }
+      el.innerHTML = clusters.map(c => `
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:16px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+            <span style="font-family:monospace;font-size:12px;color:var(--error);word-break:break-all">${c.cluster_key}</span>
+            <span class="badge error">${c.count} occurrences</span>
+          </div>
+          <div style="font-size:13px;color:var(--text);margin-bottom:12px">
+            <b>Pattern:</b> ${c.representative.name} in ${c.representative.language}
+          </div>
+          <div style="display:flex;gap:8px;overflow-x:auto;padding-bottom:8px">
+            ${c.traces.map(t => `<button class="badge" style="background:var(--border);color:var(--muted)" onclick="switchTab('timeline');loadTrace('${t.trace_id}')">${t.trace_id.slice(0, 8)}</button>`).join('')}
+          </div>
+        </div>
+      `).join('');
+    }
+
+    async function loadGraph() {
+      const res = await fetch('/api/graph');
+      const data = await res.json();
+      renderGraph(data);
+    }
+
+    function renderGraph(data) {
+      const svg = d3.select("#graph-svg");
+      svg.selectAll("*").remove();
+
+      const width = document.getElementById('graph-panel').clientWidth;
+      const height = document.getElementById('graph-panel').clientHeight;
+      if (!width || !height) return;
+
+      const simulation = d3.forceSimulation(data.nodes)
+        .force("link", d3.forceLink(data.links).id(d).id(d => d.id).distance(100))
+        .force("charge", d3.forceManyBody().strength(-300))
+        .force("center", d3.forceCenter(width / 2, height / 2));
+
+      // Arrow markers
+      svg.append("defs").append("marker")
+        .attr("id", "arrowhead")
+        .attr("viewBox", "-0 -5 10 10")
+        .attr("refX", 20)
+        .attr("refY", 0)
+        .attr("orient", "auto")
+        .attr("markerWidth", 6)
+        .attr("markerHeight", 6)
+        .attr("xoverflow", "visible")
+        .append("svg:path")
+        .attr("d", "M 0,-5 L 10 ,0 L 0,5")
+        .attr("fill", "var(--muted)")
+        .style("stroke", "none");
+
+      const link = svg.append("g")
+        .selectAll("line")
+        .data(data.links)
+        .join("line")
+        .attr("stroke", "var(--border)")
+        .attr("stroke-width", d => Math.sqrt(d.count) + 1)
+        .attr("marker-end", "url(#arrowhead)");
+
+      const node = svg.append("g")
+        .selectAll("g")
+        .data(data.nodes)
+        .join("g")
+        .call(drag(simulation));
+
+      node.append("circle")
+        .attr("r", 12)
+        .attr("fill", "var(--surface)")
+        .attr("stroke", "var(--accent)")
+        .attr("stroke-width", 2);
+
+      node.append("text")
+        .text(d => d.label)
+        .attr("x", 16)
+        .attr("y", 4)
+        .attr("fill", "var(--text)")
+        .style("font-size", "11px");
+
+      simulation.on("tick", () => {
+        link
+          .attr("x1", d => d.source.x)
+          .attr("y1", d => d.source.y)
+          .attr("x2", d => d.target.x)
+          .attr("y2", d => d.target.y);
+        node
+          .attr("transform", d => `translate(${d.x},${d.y})`);
+      });
+
+      function drag(simulation) {
+        return d3.drag()
+          .on("start", (event) => {
+            if (!event.active) simulation.alphaTarget(0.3).restart();
+            event.subject.fx = event.subject.x;
+            event.subject.fy = event.subject.y;
+          })
+          .on("drag", (event) => {
+            event.subject.fx = event.x;
+            event.subject.fy = event.y;
+          })
+          .on("end", (event) => {
+            if (!event.active) simulation.alphaTarget(0);
+            event.subject.fx = null;
+            event.subject.fy = null;
+          });
+      }
+    }
+
+    // ── Flamegraph ────────────────────────────────────────────────────────────────
+    function renderFlamegraph() {
+      const el = document.getElementById('flame-container');
+      el.innerHTML = '';
+      if (!events.length) return;
+
+      // 1. Build hierarchy
+      const enterEvents = events.filter(e => e.event_type === 'FunctionEnter');
+      if (!enterEvents.length) {
+        el.innerHTML = '<div class="empty-state">No call stack data available for flamegraph</div>';
+        return;
+      }
+
+      // Find root (usually event with no parent_span_id, or first one)
+      const roots = enterEvents.filter(e => !e.parent_span_id);
+      const root = roots.length ? roots[0] : enterEvents[0];
+
+      const durationMap = new Map();
+      events.forEach(e => {
+        if (e.event_type === 'FunctionExit' && e.parent_span_id) {
+          durationMap.set(e.parent_span_id, e.duration_us);
+        }
+      });
+
+      function buildNode(ev) {
+        const children = enterEvents.filter(c => c.parent_span_id === ev.span_id);
+        const dur = durationMap.get(ev.span_id) || 0;
+        return {
+          name: ev.function_name,
+          value: dur,
+          start: ev.timestamp_ms,
+          children: children.map(buildNode)
+        };
+      }
+
+      const data = buildNode(root);
+
+      // 2. Render using D3
+      const width = el.clientWidth || 800;
+      const rowHeight = 24;
+      const hierarchy = d3.hierarchy(data).sum(d => d.value);
+      const root_node = d3.partition().size([width, (hierarchy.height + 1) * rowHeight])(hierarchy);
+
+      const svg = d3.select(el).append("svg")
+        .attr("width", width)
+        .attr("height", (hierarchy.height + 1) * rowHeight)
+        .style("font-family", "var(--font)")
+        .style("font-size", "10px");
+
+      const color = d3.scaleOrdinal(d3.schemeAccent);
+
+      const cell = svg.selectAll("g")
+        .data(root_node.descendants())
+        .join("g")
+        .attr("transform", d => `translate(${d.x0},${d.y0})`);
+
+      cell.append("rect")
+        .attr("width", d => Math.max(0, d.x1 - d.x0 - 1))
+        .attr("height", rowHeight - 1)
+        .attr("fill", d => color(d.data.name))
+        .attr("rx", 2)
+        .style("cursor", "pointer")
+        .on("mouseover", function (event, d) {
+          d3.select(this).attr("opacity", 0.8);
+          // Show tooltip if needed
+        })
+        .on("mouseout", function () {
+          d3.select(this).attr("opacity", 1);
+        });
+
+      cell.append("text")
+        .attr("x", 4)
+        .attr("y", 16)
+        .attr("fill", "white")
+        .style("pointer-events", "none")
+        .text(d => {
+          const w = d.x1 - d.x0;
+          const label = `${d.data.name} (${(d.data.value / 1000).toFixed(2)}ms)`;
+          return w > 50 ? label : (w > 20 ? d.data.name : "");
+        });
+    }
 
     function togglePlay() {
       if (playing) { stopPlay(); return; }
@@ -648,8 +1125,20 @@
 
     function shortType(t) {
       if (!t) return '?';
-      const map = { FunctionEnter: 'ENTER', FunctionExit: 'EXIT', Exception: 'EXCEPTION', AsyncSpawn: 'SPAWN', AsyncResume: 'RESUME', HttpRequest: 'HTTP→', HttpResponse: '←HTTP' };
+      const map = { FunctionEnter: 'ENTER', FunctionExit: 'EXIT', Exception: 'EXCEPTION', AsyncSpawn: 'SPAWN', AsyncResume: 'RESUME', HttpRequest: 'HTTP→', HttpResponse: '←HTTP', DbQuery: 'SQL' };
       return map[t] || t;
+    }
+
+    function renderSql(sql) {
+      if (!sql) return '';
+      const keywords = /\b(SELECT|FROM|WHERE|INSERT|INTO|UPDATE|DELETE|JOIN|LEFT|RIGHT|INNER|ON|GROUP|BY|ORDER|LIMIT|HAVING|VALUES|SET|CREATE|TABLE|DROP|INDEX|ALTER)\b/gi;
+      const strings = /'[^']*'/g;
+      const numbers = /\b\d+\b/g;
+
+      return escHtml(sql)
+        .replace(keywords, m => `<span class="sql-key">${m.toUpperCase()}</span>`)
+        .replace(strings, m => `<span class="sql-str">${m}</span>`)
+        .replace(numbers, m => `<span class="sql-num">${m}</span>`);
     }
 
     function escHtml(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }

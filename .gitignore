@@ -1,0 +1,31 @@
+# Rust
+target/
+**/*.rs.bk
+Cargo.lock
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+agents/python/orionis/proto/*.py
+
+# Go
+bin/
+agents/go/orionis/proto/*.go
+
+# Orionis Engine Data
+orionis-data/
+*.log
+engine_error.log
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

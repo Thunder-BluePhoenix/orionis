@@ -1,0 +1,76 @@
+syntax = "proto3";
+
+package orionis;
+
+// For Go codegen
+option go_package = "orionis/proto";
+
+// Service for ingesting trace events
+service Ingest {
+  // Client streams events as they happen
+  rpc StreamEvents (stream TraceEvent) returns (IngestResponse);
+}
+
+message IngestResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+// Mirroring the REST models.rs
+message TraceEvent {
+  string trace_id = 1;         // UUID string
+  string span_id = 2;          // UUID string
+  string parent_span_id = 3;   // UUID string, empty if null
+  uint64 timestamp_ms = 4;
+  EventType event_type = 5;
+  string function_name = 6;
+  string module = 7;
+  string file = 8;
+  uint32 line = 9;
+  repeated LocalVar locals = 10;
+  string error_message = 11;
+  optional uint64 duration_us = 12;
+  AgentLanguage language = 13;
+  string thread_id = 14;
+  HttpRequest http_request = 15;
+  DbQuery db_query = 16;
+}
+
+message HttpRequest {
+  string method = 1;
+  string url = 2;
+  map<string, string> headers = 3;
+  bytes body = 4;
+}
+
+message DbQuery {
+  string query = 1;
+  string driver = 2;
+  uint64 duration_us = 3;
+}
+
+enum EventType {
+  EVENT_UNKNOWN = 0;
+  EVENT_FUNCTION_ENTER = 1;
+  EVENT_FUNCTION_EXIT = 2;
+  EVENT_EXCEPTION = 3;
+  EVENT_ASYNC_SPAWN = 4;
+  EVENT_ASYNC_RESUME = 5;
+  EVENT_HTTP_REQUEST = 6;
+  EVENT_HTTP_RESPONSE = 7;
+  EVENT_DB_QUERY = 8;
+}
+
+enum AgentLanguage {
+  LANG_UNKNOWN = 0;
+  LANG_PYTHON = 1;
+  LANG_GO = 2;
+  LANG_RUST = 3;
+  LANG_CPP = 4;
+}
+
+message LocalVar {
+  string name = 1;
+  string value = 2;
+  string type_name = 3;
+}

@@ -23,6 +23,7 @@
 #include <cstdlib>
 #include <functional>
 #include <cstring>
+#include <algorithm>
 
 #ifdef _WIN32
   #include <winsock2.h>
@@ -105,6 +106,7 @@ struct Event {
     int         line;
     std::string error_message;
     int64_t     duration_us;   // -1 = not set
+    std::string thread_id;
 };
 
 inline std::string escape_json(const std::string& s) {
@@ -133,7 +135,8 @@ inline std::string event_to_json(const Event& e) {
       << "\"line\":" << e.line << ","
       << "\"error_message\":" << (e.error_message.empty() ? "null" : "\"" + escape_json(e.error_message) + "\"") << ","
       << "\"duration_us\":" << (e.duration_us < 0 ? "null" : std::to_string(e.duration_us)) << ","
-      << "\"language\":\"cpp\""
+      << "\"language\":\"cpp\","
+      << "\"thread_id\":\"" << e.thread_id << "\""
       << "}";
     return j.str();
 }
@@ -324,6 +327,29 @@ inline LONG WINAPI win32_exception_handler(EXCEPTION_POINTERS* ExceptionInfo) {
 }
 #endif
 
+// ── Trace Propagation ─────────────────────────────────────────────────────────
+
+inline void inject_trace_headers(std::map<std::string, std::string>& headers) {
+    if (trace_id.empty()) return;
+    std::string tid = trace_id;
+    tid.erase(std::remove(tid.begin(), tid.end(), '-'), tid.end());
+    // Span ID is random for next service
+    std::string sid = new_uuid();
+    sid.erase(std::remove(sid.begin(), sid.end(), '-'), sid.end());
+    headers["traceparent"] = "00-" + tid + "-" + sid + "-01";
+}
+
+inline void extract_trace_headers(const std::map<std::string, std::string>& headers) {
+    auto it = headers.find("traceparent");
+    if (it != headers.end() && it->second.size() >= 55) {
+        // 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
+        std::string raw = it->second;
+        std::string tid = raw.substr(3, 32);
+        // Insert dashes back for UUID format
+        trace_id = tid.substr(0,8) + "-" + tid.substr(8,4) + "-" + tid.substr(12,4) + "-" + tid.substr(16,4) + "-" + tid.substr(20);
+    }
+}
+
 // ── Public API ────────────────────────────────────────────────────────────────
 
 inline void start(const std::string& url = "http://localhost:7700") {
@@ -360,6 +386,12 @@ inline void start(const std::string& url = "http://localhost:7700") {
     fprintf(stderr, "[Orionis] C++ agent started — engine: %s\n", url.c_str());
 }
 
+inline std::string get_thread_id() {
+    std::ostringstream ss;
+    ss << std::this_thread::get_id();
+    return ss.str();
+}
+
 inline void stop() {
     running = false;
     flush();
@@ -388,6 +420,7 @@ public:
         ev.file          = file;
         ev.line          = line;
         ev.duration_us   = -1;
+        ev.thread_id     = get_thread_id();
         enqueue(ev);
     }
 
@@ -404,6 +437,7 @@ public:
         ev.file           = file;
         ev.line           = line;
         ev.duration_us    = dur;
+        ev.thread_id      = get_thread_id();
         enqueue(ev);
     }
 };
