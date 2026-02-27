@@ -7,11 +7,19 @@ use axum::{
 use jsonwebtoken::{decode, DecodingKey, Validation, Algorithm};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Claims {
     pub sub: String,
     pub exp: usize,
-    pub role: Option<String>,
+    pub role: String, // "admin", "member", "viewer"
+    pub tenant_id: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct Identity {
+    pub user_id: String,
+    pub tenant_id: String,
+    pub role: String,
 }
 
 pub async fn auth_middleware(req: Request, next: Next) -> Result<Response, StatusCode> {
@@ -20,6 +28,16 @@ pub async fn auth_middleware(req: Request, next: Next) -> Result<Response, Statu
         if let Ok(key_str) = auth_header.to_str() {
             let valid_key = std::env::var("ORIONIS_API_KEY").unwrap_or_else(|_| "secret-agent-key".to_string());
             if key_str == valid_key {
+                let tenant_id = req.headers().get("X-Tenant-Id")
+                    .and_then(|h| h.to_str().ok())
+                    .unwrap_or("default");
+                
+                let mut req = req;
+                req.extensions_mut().insert(Identity {
+                    user_id: "agent".to_string(),
+                    tenant_id: tenant_id.to_string(),
+                    role: "member".to_string(),
+                });
                 return Ok(next.run(req).await);
             }
         }
@@ -50,12 +68,55 @@ pub async fn auth_middleware(req: Request, next: Next) -> Result<Response, Statu
     // JWT validation logic
     let secret = std::env::var("ORIONIS_JWT_SECRET").unwrap_or_else(|_| "secret".to_string());
     
+    // Check if it's an OIDC token from a known issuer
+    if let Ok(header) = jsonwebtoken::decode_header(token) {
+        if let Some(kid) = header.kid {
+            // In a real OIDC setup, we'd fetch JWKS for this kid from the OIDC provider's discovery endpoint.
+            // For now, we provide a hook for OIDC validation.
+            if let Ok(identity) = validate_oidc_token(token, &kid).await {
+                let mut req = req;
+                req.extensions_mut().insert(identity);
+                return Ok(next.run(req).await);
+            }
+        }
+    }
+
     match decode::<Claims>(
         token,
         &DecodingKey::from_secret(secret.as_bytes()),
         &Validation::new(Algorithm::HS256),
     ) {
-        Ok(_) => Ok(next.run(req).await),
+        Ok(token_data) => {
+            let mut req = req;
+            let identity = Identity {
+                user_id: token_data.claims.sub,
+                tenant_id: token_data.claims.tenant_id,
+                role: token_data.claims.role,
+            };
+            req.extensions_mut().insert(identity);
+            Ok(next.run(req).await)
+        }
         Err(_) => Err(StatusCode::UNAUTHORIZED),
     }
+}
+
+async fn validate_oidc_token(_token: &str, _kid: &str) -> Result<Identity, StatusCode> {
+    // Placeholder for real OIDC validation against providers like Google/Github/Auth0
+    // This would typically use something like the `openidconnect` crate.
+    let oidc_enabled = std::env::var("ORIONIS_OIDC_ENABLED").is_ok();
+    if !oidc_enabled {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
+    // Mock successful OIDC validation
+    Ok(Identity {
+        user_id: "oidc-user".into(),
+        tenant_id: "oidc-tenant".into(),
+        role: "member".into(),
+    })
+}
+
+
+pub fn get_identity(req: &axum::extract::Request) -> Option<Identity> {
+    req.extensions().get::<Identity>().cloned()
 }

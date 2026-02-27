@@ -54,6 +54,24 @@ pub struct TraceEvent {
     pub thread_id: Option<String>,
     pub http_request: Option<HttpRequest>,
     pub db_query: Option<DbQuery>,
+    pub tenant_id: Option<String>,
+    pub event_id: Option<String>,
+}
+
+impl TraceEvent {
+    pub fn calculate_event_id(&mut self) {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        
+        let mut hasher = DefaultHasher::new();
+        self.trace_id.hash(&mut hasher);
+        self.span_id.hash(&mut hasher);
+        self.timestamp_ms.hash(&mut hasher);
+        // Event type as string for hashing
+        format!("{:?}", self.event_type).hash(&mut hasher);
+        
+        self.event_id = Some(format!("{:x}", hasher.finish()));
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -97,6 +115,7 @@ pub struct Trace {
     pub language: AgentLanguage,
     pub env: Option<EnvSnapshot>,
     pub event_count: usize,
+    pub tenant_id: Option<String>,
 }
 
 /// Summary of a trace for the list view (no events, just metadata).
@@ -112,6 +131,9 @@ pub struct TraceSummary {
     pub thread_ids: Vec<String>,
     pub ai_cluster_key: Option<String>,
     pub ai_summary: Option<String>,
+    pub tenant_id: Option<String>,
+    pub tags: Vec<String>,
+    pub assigned_to: Option<String>,
 }
 
 /// Incoming payload from an agent — either a single event or a batch.
@@ -149,4 +171,5 @@ pub struct TraceComment {
     pub user_id: String,
     pub text: String,
     pub timestamp_ms: u64,
+    pub tenant_id: Option<String>,
 }

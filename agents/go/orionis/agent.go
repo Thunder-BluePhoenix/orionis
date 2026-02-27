@@ -26,6 +26,8 @@ import (
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
+// ── Config ────────────────────────────────────────────────────────────────────
+
 // Config controls agent behaviour.
 type Config struct {
 	EngineURL       string
@@ -36,6 +38,7 @@ type Config struct {
 	Mode            string // "dev" | "safe" | "error"
 	BatchSize       int
 	FlushIntervalMs int
+	MaxBufferSize   int
 }
 
 var defaultConfig = Config{
@@ -46,21 +49,32 @@ var defaultConfig = Config{
 	Mode:            "dev",
 	BatchSize:       20,
 	FlushIntervalMs: 100,
+	MaxBufferSize:   10000,
 }
 
 // ── Agent State ───────────────────────────────────────────────────────────────
 
 type agent struct {
-	cfg     Config
-	mu      sync.Mutex
-	batch   []TraceEvent
-	stop    chan struct{}
-	traceID string
-	sender  sender
+	cfg          Config
+	mu           sync.Mutex
+	batch        []TraceEvent
+	stop         chan struct{}
+	traceID      string
+	sender       sender
+	backoffUntil time.Time
+	backoffCount int
 }
 
+type sendResult int
+
+const (
+	sendSuccess sendResult = iota
+	sendRetryable
+	sendFatal
+)
+
 type sender interface {
-	send(events []TraceEvent)
+	send(events []TraceEvent) sendResult
 }
 
 var global *agent
@@ -172,14 +186,6 @@ func WithModules(mods ...string) func(*Config) {
 func WithMode(mode string) func(*Config) { return func(c *Config) { c.Mode = mode } }
 
 // Trace captures a function call manually (use defer for exit).
-// Returns a function to call on function exit (capture return timing).
-//
-// Usage:
-//
-//	func MyFunc() {
-//	    defer orionis.Trace()()
-//	    ...
-//	}
 func Trace() func() {
 	if global == nil {
 		return func() {}
@@ -198,7 +204,6 @@ func Trace() func() {
 
 	spanID := uuid.New().String()
 	startNs := time.Now().UnixNano()
-	threadID := "routine"
 
 	global.enqueue(TraceEvent{
 		TraceID:      global.traceID,
@@ -210,7 +215,6 @@ func Trace() func() {
 		File:         file,
 		Line:         line,
 		Language:     "go",
-		ThreadID:     threadID,
 	})
 
 	return func() {
@@ -228,20 +232,15 @@ func Trace() func() {
 			Line:         line,
 			DurationUs:   &durUs,
 			Language:     "go",
-			ThreadID:     threadID,
 		})
 	}
 }
 
 // RecordPanic should be used with defer to capture panic information.
-//
-// Usage:
-//
-//	defer orionis.RecordPanic()
 func RecordPanic() {
 	if r := recover(); r != nil {
 		if global == nil {
-			panic(r) // re-panic if agent not running
+			panic(r)
 		}
 		pc, file, line, _ := runtime.Caller(2)
 		fn := runtime.FuncForPC(pc)
@@ -262,7 +261,7 @@ func RecordPanic() {
 			Language:     "go",
 		})
 		global.flush()
-		panic(r) // re-panic so the program still crashes normally
+		panic(r)
 	}
 }
 
@@ -282,7 +281,6 @@ func CaptureQuery(query, driver string, durationUs uint64) {
 		File:         file,
 		Line:         line,
 		Language:     "go",
-		ThreadID:     "routine",
 		DBQuery: &DBQuery{
 			Query:      query,
 			Driver:     driver,
@@ -300,127 +298,32 @@ func InjectTraceHeaders(req *http.Request) {
 	tid := global.traceID
 	global.mu.Unlock()
 
-	// Format: 00-<trace-id>-<parent-id>-<flags>
-	// We use the same trace-id and a dummy flags "01" (sampled)
-	// For parent-id, we'll just use 16 zeros for now or a random 64-bit hex.
 	rawTid := strings.ReplaceAll(tid, "-", "")
 	header := fmt.Sprintf("00-%s-0000000000000000-01", rawTid)
 	req.Header.Set("traceparent", header)
 }
 
-// TraceRoundTripper wraps an http.RoundTripper to inject trace headers automatically.
-type TraceRoundTripper struct {
-	Proxied http.RoundTripper
-}
-
-func (t *TraceRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
-	InjectTraceHeaders(req)
-	if t.Proxied == nil {
-		return http.DefaultTransport.RoundTrip(req)
-	}
-	return t.Proxied.RoundTrip(req)
-}
-
-// HTTPMiddleware wraps an http.Handler to trace incoming requests.
-func HTTPMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if global == nil {
-			next.ServeHTTP(w, r)
-			return
-		}
-
-		// Get file and line for the middleware itself
-		_, file, line, _ := runtime.Caller(0)
-
-		// ── W3C traceparent propagation ──
-		// Format: 00-<trace-id>-<parent-id>-<flags>
-		tp := r.Header.Get("traceparent")
-		if tp != "" {
-			parts := strings.Split(tp, "-")
-			if len(parts) >= 2 {
-				// Re-format trace-id to UUID string (adding hyphens if needed)
-				rawTid := parts[1]
-				if len(rawTid) == 32 {
-					tid := fmt.Sprintf("%s-%s-%s-%s-%s",
-						rawTid[0:8], rawTid[8:12], rawTid[12:16], rawTid[16:20], rawTid[20:32])
-					global.mu.Lock()
-					global.traceID = tid
-					global.mu.Unlock()
-				}
-			}
-		}
-
-		spanID := uuid.New().String()
-		path := r.URL.Path
-		method := r.Method
-		start := time.Now()
-
-		// Capture request data for Replay
-		headers := make(map[string]string)
-		for k, v := range r.Header {
-			if len(v) > 0 {
-				headers[k] = v[0]
-			}
-		}
-		httpData := &HTTPRequest{
-			Method:  r.Method,
-			URL:     r.URL.String(),
-			Headers: headers,
-			// Body is not captured here as it requires reading the request body,
-			// which might interfere with the handler.
-		}
-
-		global.enqueue(TraceEvent{
-			TraceID:      global.traceID,
-			SpanID:       spanID,
-			TimestampMs:  time.Now().UnixMilli(),
-			EventType:    EventHttpRequest,
-			FunctionName: r.Method + " " + r.URL.Path,
-			Module:       "net/http",
-			File:         file,
-			Line:         line,
-			Language:     "go",
-			ThreadID:     "routine",
-			HTTPRequest:  httpData,
-		})
-
-		next.ServeHTTP(w, r)
-
-		durUs := time.Since(start).Microseconds()
-		global.enqueue(TraceEvent{
-			TraceID:      global.traceID,
-			SpanID:       uuid.New().String(),
-			ParentSpanID: &spanID,
-			TimestampMs:  nowMs(),
-			EventType:    EventHttpResponse,
-			FunctionName: method + " " + path,
-			Module:       "net/http",
-			File:         "middleware",
-			Line:         0,
-			DurationUs:   &durUs,
-			Language:     "go",
-		})
-	})
-}
-
-// NewTraceID starts a new trace context (call at the start of each request/job).
+// NewTraceID starts a new trace context.
 func NewTraceID() string {
 	if global == nil {
 		return ""
 	}
+	global.mu.Lock()
 	global.traceID = uuid.New().String()
+	global.mu.Unlock()
 	return global.traceID
 }
 
 // ── Internal ──────────────────────────────────────────────────────────────────
 
 func (a *agent) enqueue(ev TraceEvent) {
-	if ev.ThreadID == "" {
-		// Go doesn't expose GID. We'll use a placeholder or tag it.
-		ev.ThreadID = "routine"
-	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
+
+	if len(a.batch) >= a.cfg.MaxBufferSize {
+		// Data shedding: drop oldest
+		a.batch = a.batch[1:]
+	}
 	a.batch = append(a.batch, ev)
 }
 
@@ -447,12 +350,48 @@ func (a *agent) flush() {
 		a.mu.Unlock()
 		return
 	}
+
+	if time.Now().Before(a.backoffUntil) {
+		a.mu.Unlock()
+		return
+	}
+
 	toSend := make([]TraceEvent, len(a.batch))
 	copy(toSend, a.batch)
 	a.batch = a.batch[:0]
 	a.mu.Unlock()
 
-	a.sender.send(toSend)
+	res := a.sender.send(toSend)
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	switch res {
+	case sendSuccess:
+		a.backoffCount = 0
+		a.backoffUntil = time.Time{}
+	case sendRetryable:
+		// Return to batch (prepend)
+		if len(a.batch)+len(toSend) <= a.cfg.MaxBufferSize {
+			a.batch = append(toSend, a.batch...)
+		} else {
+			// If combining overflows, just keep the new ones and some of the old ones
+			space := a.cfg.MaxBufferSize - len(a.batch)
+			if space > 0 {
+				a.batch = append(toSend[len(toSend)-space:], a.batch...)
+			}
+		}
+
+		// Exponential backoff
+		a.backoffCount++
+		delay := time.Duration(100*int(1<<uint(a.backoffCount))) * time.Millisecond
+		if delay > 10*time.Second {
+			delay = 10 * time.Second
+		}
+		a.backoffUntil = time.Now().Add(delay)
+	case sendFatal:
+		// Drop data
+	}
 }
 
 // ── Senders ──────────────────────────────────────────────────────────────────
@@ -461,15 +400,30 @@ type httpSender struct {
 	url string
 }
 
-func (s *httpSender) send(events []TraceEvent) {
+func (s *httpSender) send(events []TraceEvent) sendResult {
 	data, err := json.Marshal(events)
 	if err != nil {
-		return
+		return sendFatal
 	}
 	req, _ := http.NewRequest("POST", s.url+"/api/ingest", bytes.NewReader(data))
 	req.Header.Set("Content-Type", "application/json")
 	client := &http.Client{Timeout: 3 * time.Second}
-	client.Do(req)
+	resp, err := client.Do(req)
+	if err != nil {
+		return sendRetryable
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == 503 || resp.StatusCode == 429 {
+		return sendRetryable
+	}
+	if resp.StatusCode >= 400 && resp.StatusCode < 500 {
+		return sendFatal
+	}
+	if resp.StatusCode >= 500 {
+		return sendRetryable
+	}
+	return sendSuccess
 }
 
 type grpcSender struct {
@@ -488,14 +442,13 @@ func newGrpcSender(target string) (*grpcSender, error) {
 	}, nil
 }
 
-func (s *grpcSender) send(events []TraceEvent) {
+func (s *grpcSender) send(events []TraceEvent) sendResult {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	stream, err := s.client.StreamEvents(ctx)
 	if err != nil {
-		fmt.Printf("[Orionis] gRPC stream error: %v\n", err)
-		return
+		return sendRetryable
 	}
 
 	for _, ev := range events {
@@ -521,53 +474,17 @@ func (s *grpcSender) send(events []TraceEvent) {
 			pbEv.DurationUs = &dur
 		}
 
-		switch ev.EventType {
-		case EventFunctionEnter:
-			pbEv.EventType = pb.EventType_EVENT_FUNCTION_ENTER
-		case EventFunctionExit:
-			pbEv.EventType = pb.EventType_EVENT_FUNCTION_EXIT
-		case EventException:
-			pbEv.EventType = pb.EventType_EVENT_EXCEPTION
-		case EventHttpRequest:
-			pbEv.EventType = pb.EventType_EVENT_HTTP_REQUEST
-		case EventHttpResponse:
-			pbEv.EventType = pb.EventType_EVENT_HTTP_RESPONSE
-		case EventDbQuery:
-			pbEv.EventType = pb.EventType_EVENT_DB_QUERY
-		}
-
-		if ev.HTTPRequest != nil {
-			pbEv.HttpRequest = &pb.HttpRequest{
-				Method:  ev.HTTPRequest.Method,
-				Url:     ev.HTTPRequest.URL,
-				Headers: ev.HTTPRequest.Headers,
-				Body:    ev.HTTPRequest.Body,
-			}
-		}
-
-		if ev.DBQuery != nil {
-			pbEv.DbQuery = &pb.DbQuery{
-				Query:      ev.DBQuery.Query,
-				Driver:     ev.DBQuery.Driver,
-				DurationUs: ev.DBQuery.DurationUs,
-			}
-		}
-
-		if ev.ThreadID != "" {
-			pbEv.ThreadId = ev.ThreadID
-		}
-
-		for _, l := range ev.Locals {
-			pbEv.Locals = append(pbEv.Locals, &pb.LocalVar{
-				Name:     l.Name,
-				Value:    l.Value,
-				TypeName: l.TypeName,
-			})
-		}
-
 		_ = stream.Send(pbEv)
 	}
-	_, _ = stream.CloseAndRecv()
+	_, err = stream.CloseAndRecv()
+	if err != nil {
+		// check grpc status
+		if strings.Contains(err.Error(), "ResourceExhausted") || strings.Contains(err.Error(), "Unavailable") {
+			return sendRetryable
+		}
+		return sendFatal
+	}
+	return sendSuccess
 }
 
 func sendEnvSnapshot(cfg Config) {

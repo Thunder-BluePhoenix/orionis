@@ -34,6 +34,7 @@ message TraceEvent {
   string thread_id = 14;
   HttpRequest http_request = 15;
   DbQuery db_query = 16;
+  string tenant_id = 17;
 }
 
 message HttpRequest {

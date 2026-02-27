@@ -367,7 +367,8 @@ orion config                         # Show/edit configuration
 | Phase 2 — Cross-Service | 7–11 | v0.2 | Cross-service graph, flamegraph, HTTP replay, async viz, OTEL |
 | Phase 3 — AI Intelligence | 12–16 | v0.3 | AI summarizer + root cause, DB lens, diff mode, benchmarked |
 | Phase 4 — Enterprise | 17–21 | v1.0 | Cluster, ClickHouse, SSO/RBAC, team collab, CI/CD |
-| Phase 5 — Final Product | 22–27 | v2.0 | Full platform, AI patches, crash replay, cloud, plugin ecosystem |
+| Phase 4.5 — Reliability | 22–24 | v1.1 | Durable WAL, Idempotency, Backpressure, Benchmarking |
+| Phase 5 — Final Product | 25–30 | v2.0 | Full platform, AI patches, crash replay, cloud, plugin ecosystem |
 
 ---
 
@@ -466,6 +467,10 @@ Things confirmed for correct phases but not in Phase 1:
 | AI trace summarizer + root cause | Phase 3 |
 | Database query lens (SQL timing in trace) | Phase 3 |
 | Diff mode — two executions side by side | Phase 3 |
+| Durable Ingestion (WAL) & Idempotency | Phase 4.5 |
+| Backpressure & Agent Circuit Breakers | Phase 4.5 |
+| Real-time observability metrics (/metrics) | Phase 4.5 |
+| `orion-loadgen` Benchmarking Tool | Phase 4.5 |
 | Memory heap allocation tracking per span | Phase 5 |
 | Team annotations + trace sharing | Phase 4 |
 | Production crash sandbox replay | Phase 5 |

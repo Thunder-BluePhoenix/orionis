@@ -9,26 +9,32 @@ use tower_http::cors::CorsLayer;
 use uuid::Uuid;
 
 use crate::{
-    models::IngestPayload,
+    models::{IngestPayload, TraceComment},
     store::{self, DbHandle},
     ws::WsBroadcaster,
+    auth::{Identity},
 };
+use axum::Extension;
 
 #[derive(Clone)]
 pub struct AppState {
     pub db: DbHandle,
     pub ws: WsBroadcaster,
     pub cluster: std::sync::Arc<crate::clustering::ClusterManager>,
+    pub wal: std::sync::Arc<crate::wal::WalManager>,
+    pub ingestion_limit: std::sync::Arc<tokio::sync::Semaphore>,
 }
 
 pub fn build_router(state: AppState) -> Router {
     let api_router = Router::new()
         .route("/traces",       get(list_traces))
-        .route("/traces/{id}",  get(get_trace))
+        .route("/api/traces/:id", get(get_trace))
+        .route("/api/traces/:id/tags", post(update_tags))
+        .route("/api/traces/:id/assign", post(update_assignment))
+        .route("/api/traces/:id/ai-summary", post(ai_summarize))
         .route("/ingest",       post(ingest))
         .route("/graph",        get(get_graph))
         .route("/replay/{id}",  post(replay))
-        .route("/ai/summarize/{id}", get(ai_summarize))
         .route("/clusters",     get(get_clusters))
         .route("/nodes",        get(list_nodes))
         .route("/clear",        delete(clear_all))
@@ -40,13 +46,15 @@ pub fn build_router(state: AppState) -> Router {
         .nest("/api", api_router)
         .route("/v1/traces",        post(otlp_ingress).layer(axum::middleware::from_fn(crate::auth::auth_middleware)))
         .route("/ws/live",          get(ws_handler))
+        .route("/metrics",          get(|| async { crate::metrics::gather() }))
         .route("/",                 get(serve_index))
         .layer(CorsLayer::permissive())
         .with_state(state)
 }
 
-async fn list_traces(State(s): State<AppState>) -> impl IntoResponse {
-    match s.db.list_traces().await {
+async fn list_traces(State(s): State<AppState>, Extension(ident): Extension<Option<Identity>>) -> impl IntoResponse {
+    let tenant_id = ident.map(|i| i.tenant_id);
+    match s.db.list_traces(tenant_id).await {
         Ok(t)  => Json(t).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
@@ -59,26 +67,47 @@ async fn list_nodes(State(s): State<AppState>) -> impl IntoResponse {
     }
 }
 
-async fn get_trace(State(s): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
+async fn get_trace(State(s): State<AppState>, Extension(ident): Extension<Option<Identity>>, Path(id): Path<String>) -> impl IntoResponse {
+    let tenant_id = ident.map(|i| i.tenant_id);
     let uuid = match Uuid::parse_str(&id) {
         Ok(u)  => u,
         Err(_) => return (StatusCode::BAD_REQUEST, "Invalid trace ID").into_response(),
     };
-    match s.db.get_trace_events(uuid).await {
+    match s.db.get_trace_events(uuid, tenant_id).await {
         Ok(ev) => Json(ev).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
 
-async fn ingest(State(s): State<AppState>, Json(payload): Json<IngestPayload>) -> impl IntoResponse {
+async fn ingest(State(s): State<AppState>, Extension(ident): Extension<Option<Identity>>, Json(payload): Json<IngestPayload>) -> impl IntoResponse {
+    let tenant_id = ident.map(|i| i.tenant_id);
     let events = match payload {
         IngestPayload::Single(e) => vec![e],
         IngestPayload::Batch(v)  => v,
     };
 
+    // Backpressure: Limit concurrent ingestion
+    let _permit = match s.ingestion_limit.try_acquire() {
+        Ok(p) => {
+            crate::metrics::CONCURRENCY_AVAILABLE.set(s.ingestion_limit.available_permits() as f64);
+            p
+        },
+        Err(_) => {
+            crate::metrics::INGESTION_ERRORS.inc();
+            return StatusCode::SERVICE_UNAVAILABLE.into_response();
+        }
+    };
+
     let mut local_events = Vec::new();
     
-    for ev in events {
+    for mut ev in events {
+        ev.calculate_event_id();
+        
+        // WAL First (Durability)
+        if let Err(e) = s.wal.append(ev.clone(), tenant_id.clone()) {
+            eprintln!("[WAL] Append failed: {}", e);
+        }
+
         // Broadcaster for live updates
         if let Ok(json) = serde_json::to_string(&ev) {
             s.ws.broadcast(json);
@@ -93,8 +122,9 @@ async fn ingest(State(s): State<AppState>, Json(payload): Json<IngestPayload>) -
             } else {
                 // Forward to the owning node in background
                 let cluster = s.cluster.clone();
+                let tid = tenant_id.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = cluster.forward_event(&owner, ev).await {
+                    if let Err(e) = cluster.forward_event(&owner, ev, tid).await {
                         eprintln!("[Clustering] Forwarding failed: {}", e);
                     }
                 });
@@ -109,33 +139,49 @@ async fn ingest(State(s): State<AppState>, Json(payload): Json<IngestPayload>) -
         return StatusCode::OK.into_response();
     }
 
-    match s.db.ingest_events(local_events).await {
+    let events_len = local_events.len() as u64;
+    match s.db.ingest_events(local_events, tenant_id).await {
+        Ok(_)  => {
+            crate::metrics::INGESTION_TOTAL.inc_by(events_len);
+            StatusCode::OK.into_response()
+        },
+        Err(e) => {
+            crate::metrics::INGESTION_ERRORS.inc();
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+        },
+    }
+}
+
+async fn clear_all(State(s): State<AppState>, Extension(ident): Extension<Option<Identity>>) -> impl IntoResponse {
+    let tenant_id = ident.as_ref().map(|i| i.tenant_id.clone());
+    let role = ident.as_ref().map(|i| i.role.as_str()).unwrap_or("viewer");
+
+    if role != "admin" && std::env::var("ORIONIS_ENFORCE_AUTH").is_ok() {
+        return (StatusCode::FORBIDDEN, "Only admins can clear data").into_response();
+    }
+
+    match s.db.clear_all(tenant_id).await {
         Ok(_)  => StatusCode::OK.into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
 
-async fn clear_all(State(s): State<AppState>) -> impl IntoResponse {
-    match s.db.clear_all().await {
-        Ok(_)  => StatusCode::OK.into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-    }
-}
-
-async fn get_graph(State(s): State<AppState>) -> impl IntoResponse {
-    match s.db.get_service_graph().await {
+async fn get_graph(State(s): State<AppState>, Extension(ident): Extension<Option<Identity>>) -> impl IntoResponse {
+    let tenant_id = ident.map(|i| i.tenant_id);
+    match s.db.get_service_graph(tenant_id).await {
         Ok(g)  => Json(g).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
 
-async fn replay(Path(id): Path<String>, State(s): State<AppState>) -> impl IntoResponse {
+async fn replay(Path(id): Path<String>, State(s): State<AppState>, Extension(ident): Extension<Option<Identity>>) -> impl IntoResponse {
+    let tenant_id = ident.map(|i| i.tenant_id);
     let span_id = match Uuid::parse_str(&id) {
         Ok(u) => u,
         Err(_) => return StatusCode::BAD_REQUEST.into_response(),
     };
 
-    let event = match s.db.get_event_by_span_id(span_id).await {
+    let event = match s.db.get_event_by_span_id(span_id, tenant_id).await {
         Ok(Some(e)) => e,
         _ => return StatusCode::NOT_FOUND.into_response(),
     };
@@ -180,8 +226,9 @@ async fn serve_index() -> impl IntoResponse {
     Html(include_str!("../../dashboard/index.html"))
 }
 
-async fn ai_summarize(Path(id): Path<Uuid>, State(s): State<AppState>) -> impl IntoResponse {
-    let events = s.db.get_trace_events(id).await.unwrap_or_default();
+async fn ai_summarize(Path(id): Path<Uuid>, State(s): State<AppState>, Extension(ident): Extension<Option<Identity>>) -> impl IntoResponse {
+    let tenant_id = ident.map(|i| i.tenant_id);
+    let events = s.db.get_trace_events(id, tenant_id).await.unwrap_or_default();
     if events.is_empty() {
         return Json(serde_json::json!({ "error": "Trace not found" }));
     }
@@ -204,10 +251,11 @@ async fn ai_summarize(Path(id): Path<Uuid>, State(s): State<AppState>) -> impl I
     }))
 }
 
-async fn get_clusters(State(s): State<AppState>) -> axum::response::Response {
-    match s.db.get_clusters().await {
+async fn get_clusters(State(s): State<AppState>, Extension(ident): Extension<Option<Identity>>) -> impl IntoResponse {
+    let tenant_id = ident.map(|i| i.tenant_id);
+    match s.db.get_clusters(tenant_id).await {
         Ok(v) => Json(v).into_response(),
-        Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
 
@@ -265,7 +313,7 @@ async fn otlp_ingress(State(s): State<AppState>, Json(body): Json<serde_json::Va
     
     if !events.is_empty() {
         let evs = events.clone();
-        if let Err(e) = s.db.ingest_events(evs).await {
+        if let Err(e) = s.db.ingest_events(evs, None).await {
             return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
         }
         for ev in events {
@@ -278,33 +326,67 @@ async fn otlp_ingress(State(s): State<AppState>, Json(body): Json<serde_json::Va
     StatusCode::OK.into_response()
 }
 
-async fn list_comments(Path(id): Path<Uuid>, State(s): State<AppState>) -> impl IntoResponse {
-    match s.db.get_comments(id).await {
+async fn list_comments(Path(id): Path<Uuid>, State(s): State<AppState>, Extension(ident): Extension<Option<Identity>>) -> impl IntoResponse {
+    let tenant_id = ident.map(|i| i.tenant_id);
+    match s.db.get_comments(id, tenant_id).await {
         Ok(c) => Json(c).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
 
-async fn add_comment(Path(id): Path<Uuid>, State(s): State<AppState>, Json(mut payload): Json<serde_json::Value>) -> impl IntoResponse {
+async fn add_comment(Path(id): Path<Uuid>, State(s): State<AppState>, Extension(ident): Extension<Option<Identity>>, Json(mut payload): Json<serde_json::Value>) -> impl IntoResponse {
+    let tenant_id = ident.as_ref().map(|i| i.tenant_id.clone());
+    let user_id = ident.as_ref().map(|i| i.user_id.clone()).unwrap_or_else(|| "anonymous".into());
+    
     // We accept a simplified payload and fill in the rest
     let text = payload.get("text").and_then(|t| t.as_str()).unwrap_or("");
-    let user_id = payload.get("user_id").and_then(|u| u.as_str()).unwrap_or("anonymous");
     let span_id = payload.get("span_id").and_then(|s| s.as_str()).and_then(|s| Uuid::parse_str(s).ok());
     
-    let comment = crate::models::TraceComment {
+    let comment = TraceComment {
         comment_id: Uuid::new_v4(),
         trace_id: id,
         span_id,
-        user_id: user_id.to_string(),
+        user_id,
         text: text.to_string(),
         timestamp_ms: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_millis() as u64,
+        tenant_id: tenant_id.clone(),
     };
     
-    match s.db.add_comment(comment).await {
+    match s.db.add_comment(comment, tenant_id).await {
         Ok(_) => StatusCode::CREATED.into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn update_tags(Path(id): Path<Uuid>, State(s): State<AppState>, Extension(ident): Extension<Option<Identity>>, Json(payload): Json<serde_json::Value>) -> impl IntoResponse {
+    let tenant_id = ident.map(|i| i.tenant_id);
+    let tags = payload.get("tags").and_then(|t| t.as_array()).map(|a| {
+        a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect::<Vec<_>>()
+    });
+    
+    if tags.is_none() {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+
+    match s.db.update_trace_metadata(id, tags, None, tenant_id).await {
+        Ok(_) => StatusCode::OK.into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn update_assignment(Path(id): Path<Uuid>, State(s): State<AppState>, Extension(ident): Extension<Option<Identity>>, Json(payload): Json<serde_json::Value>) -> impl IntoResponse {
+    let tenant_id = ident.map(|i| i.tenant_id);
+    let assigned_to = payload.get("assigned_to").and_then(|a| a.as_str()).map(|s| s.to_string());
+    
+    if assigned_to.is_none() {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+
+    match s.db.update_trace_metadata(id, None, assigned_to, tenant_id).await {
+        Ok(_) => StatusCode::OK.into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }

@@ -15,6 +15,8 @@ pub mod proto {
 pub struct IngestService {
     pub db: DbHandle,
     pub ws: WsBroadcaster,
+    pub wal: Arc<crate::wal::WalManager>,
+    pub ingestion_limit: Arc<tokio::sync::Semaphore>,
 }
 
 #[tonic::async_trait]
@@ -27,6 +29,15 @@ impl proto::ingest_server::Ingest for IngestService {
 
         while let Some(msg_res) = stream.next().await {
             let msg = msg_res?;
+
+            // Backpressure check
+            let _permit = match self.ingestion_limit.try_acquire() {
+                Ok(p) => p,
+                Err(_) => {
+                    tracing::warn!("Ingestion limit reached, dropping gRPC stream message");
+                    continue; 
+                }
+            };
             
             // Map Protobuf to our Native models
             let trace_id = Uuid::parse_str(&msg.trace_id).unwrap_or_else(|_| Uuid::nil());
@@ -67,7 +78,7 @@ impl proto::ingest_server::Ingest for IngestService {
                 }).collect())
             };
 
-            let ev = TraceEvent {
+            let mut ev = TraceEvent {
                 trace_id,
                 span_id,
                 parent_span_id,
@@ -93,16 +104,30 @@ impl proto::ingest_server::Ingest for IngestService {
                     driver: dq.driver,
                     duration_us: dq.duration_us,
                 }),
+                tenant_id: if msg.tenant_id.is_empty() { None } else { Some(msg.tenant_id.clone()) },
+                event_id: None,
             };
+            ev.calculate_event_id();
+
+            let tid = ev.tenant_id.clone();
+
+            // WAL First (Durability)
+            if let Err(e) = self.wal.append(ev.clone(), tid.clone()) {
+                tracing::error!("WAL append failed during gRPC stream: {}", e);
+            }
 
             // Broadcast to WebSockets live
             if let Ok(json) = serde_json::to_string(&ev) {
                 self.ws.broadcast(json);
             }
 
+            let tid = ev.tenant_id.clone();
             // Ingest to database immediately
-            if let Err(e) = self.db.ingest_events(vec![ev]).await {
+            if let Err(e) = self.db.ingest_events(vec![ev], tid).await {
+                crate::metrics::INGESTION_ERRORS.inc();
                 tracing::error!("Database error during gRPC stream: {}", e);
+            } else {
+                crate::metrics::INGESTION_TOTAL.inc();
             }
         }
 

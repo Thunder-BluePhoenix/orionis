@@ -6,6 +6,8 @@ mod auth;
 mod ws;
 mod grpc;
 mod clustering;
+mod wal;
+mod metrics;
 
 use tracing::info;
 use tracing_subscriber::fmt;
@@ -43,6 +45,28 @@ async fn main() -> anyhow::Result<()> {
         store::open(&db_path)?
     };
 
+    // ── WAL (Write Ahead Log) ──────────────────────────────────────────────
+    let wal = std::sync::Arc::new(wal::WalManager::new(&db_path)?);
+    let ingestion_limit = std::sync::Arc::new(tokio::sync::Semaphore::new(
+        std::env::var("ORION_INGESTION_LIMIT").unwrap_or_else(|_| "500".to_string()).parse().unwrap_or(500)
+    ));
+    
+    // Auto-replay on startup
+    info!("Checking for WAL recovery...");
+    let replay_entries = wal.replay()?;
+    if !replay_entries.is_empty() {
+        info!("Recovering {} events from WAL...", replay_entries.is_empty());
+        let mut tenant_batches: std::collections::HashMap<Option<String>, Vec<models::TraceEvent>> = std::collections::HashMap::new();
+        for entry in replay_entries {
+            tenant_batches.entry(entry.tenant_id).or_default().push(entry.event);
+        }
+        for (tid, events) in tenant_batches {
+            let _ = db.ingest_events(events, tid).await;
+        }
+        wal.checkpoint()?; // Safe to clear after recovery
+        info!("WAL recovery complete.");
+    }
+
     // ── Clustering ──────────────────────────────────────────────────────────
     let cluster_manager = std::sync::Arc::new(clustering::ClusterManager::new(
         db.clone(),
@@ -60,6 +84,8 @@ async fn main() -> anyhow::Result<()> {
         db: db.clone(), 
         ws: ws.clone(),
         cluster: cluster_manager.clone(),
+        wal: wal.clone(),
+        ingestion_limit: ingestion_limit.clone(),
     };
     let router = build_router(state);
 
@@ -77,11 +103,31 @@ async fn main() -> anyhow::Result<()> {
     let ingest_service = grpc::IngestService {
         db: db,
         ws: ws,
+        wal: wal,
+        ingestion_limit: ingestion_limit,
     };
     
     let grpc_server = tonic::transport::Server::builder()
         .add_service(grpc::proto::ingest_server::IngestServer::new(ingest_service))
         .serve(grpc_socket_addr);
+
+    // ── Background Maintenance (Cleanup) ──────────────────────────────────
+    let retention_days: u32 = std::env::var("ORION_RETENTION_DAYS")
+        .unwrap_or_else(|_| "7".to_string())
+        .parse()
+        .unwrap_or(7);
+    
+    let db_for_cleanup = db.clone();
+    tokio::spawn(async move {
+        loop {
+            info!("Running background data retention cleanup ({} days)...", retention_days);
+            if let Err(e) = db_for_cleanup.cleanup_expired_data(retention_days).await {
+                tracing::error!("Retention cleanup failed: {}", e);
+            }
+            // Repeat every 24 hours (86400 seconds)
+            tokio::time::sleep(tokio::time::Duration::from_secs(86400)).await;
+        }
+    });
 
     // Run both servers concurrently
     tokio::try_join!(

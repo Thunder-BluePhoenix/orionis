@@ -33,7 +33,10 @@ impl ClickHouseStore {
                 event_count UInt32,
                 thread_ids Array(String),
                 ai_cluster_key Nullable(String),
-                ai_summary Nullable(String)
+                ai_summary Nullable(String),
+                tenant_id Nullable(String),
+                tags Array(String),
+                assigned_to Nullable(String)
             ) ENGINE = ReplacingMergeTree()
             ORDER BY (trace_id)
         "#).execute().await?;
@@ -55,9 +58,11 @@ impl ClickHouseStore {
                 language String,
                 thread_id Nullable(String),
                 http_request String,
-                db_query String
-            ) ENGINE = MergeTree()
-            ORDER BY (trace_id, timestamp_ms, span_id)
+                db_query String,
+                tenant_id Nullable(String),
+                event_id String
+            ) ENGINE = ReplacingMergeTree()
+            ORDER BY (trace_id, timestamp_ms, event_id)
         "#).execute().await?;
 
         client.query(r#"
@@ -78,7 +83,8 @@ impl ClickHouseStore {
                 span_id Nullable(String),
                 user_id String,
                 text String,
-                timestamp_ms UInt64
+                timestamp_ms UInt64,
+                tenant_id Nullable(String)
             ) ENGINE = MergeTree()
             ORDER BY (trace_id, timestamp_ms)
         "#).execute().await?;
@@ -100,6 +106,9 @@ struct ChTraceSummary {
     thread_ids: Vec<String>,
     ai_cluster_key: Option<String>,
     ai_summary: Option<String>,
+    tenant_id: Option<String>,
+    tags: Vec<String>,
+    assigned_to: Option<String>,
 }
 
 #[derive(Row, Serialize, Deserialize)]
@@ -120,6 +129,8 @@ struct ChEvent {
     thread_id: Option<String>,
     http_request: String,
     db_query: String,
+    tenant_id: Option<String>,
+    event_id: String,
 }
 
 #[derive(Row, Serialize, Deserialize)]
@@ -139,11 +150,12 @@ struct ChComment {
     user_id: String,
     text: String,
     timestamp_ms: u64,
+    tenant_id: Option<String>,
 }
 
 #[async_trait]
 impl StorageBackend for ClickHouseStore {
-    async fn ingest_events(&self, events: Vec<TraceEvent>) -> Result<()> {
+    async fn ingest_events(&self, events: Vec<TraceEvent>, tenant_id: Option<String>) -> Result<()> {
         if events.is_empty() { return Ok(()); }
         
         let mut event_inserter = self.client.insert::<ChEvent>("events").await?;
@@ -165,6 +177,9 @@ impl StorageBackend for ClickHouseStore {
                     thread_ids: Vec::new(),
                     ai_cluster_key: None,
                     ai_summary: None,
+                    tenant_id: tenant_id.clone(),
+                    tags: Vec::new(),
+                    assigned_to: None,
                 }
             });
 
@@ -201,12 +216,13 @@ impl StorageBackend for ClickHouseStore {
                 thread_id: event.thread_id,
                 http_request: serde_json::to_string(&event.http_request).unwrap_or_default(),
                 db_query: serde_json::to_string(&event.db_query).unwrap_or_default(),
+                tenant_id: tenant_id.clone(),
+                event_id: event.event_id.unwrap_or_default(),
             };
             event_inserter.write(&ch_event).await?;
         }
         
         for (_, summary) in summaries {
-            // Explicitly map over ai_cluster_key rather than assigning directly if needed, but it should be fine.
             let ch_trace = ChTraceSummary {
                 trace_id: summary.trace_id.to_string(),
                 name: summary.name,
@@ -218,6 +234,9 @@ impl StorageBackend for ClickHouseStore {
                 thread_ids: summary.thread_ids,
                 ai_cluster_key: summary.ai_cluster_key.clone(),
                 ai_summary: summary.ai_summary.clone(),
+                tenant_id: tenant_id.clone(),
+                tags: summary.tags,
+                assigned_to: summary.assigned_to,
             };
             trace_inserter.write(&ch_trace).await?;
         }
@@ -228,8 +247,14 @@ impl StorageBackend for ClickHouseStore {
         Ok(())
     }
 
-    async fn list_traces(&self) -> Result<Vec<TraceSummary>> {
-        let rows = self.client.query("SELECT * FROM traces ORDER BY started_at DESC LIMIT 500").fetch_all::<ChTraceSummary>().await?;
+    async fn list_traces(&self, tenant_id: Option<String>) -> Result<Vec<TraceSummary>> {
+        let query = if let Some(tid) = &tenant_id {
+            format!("SELECT * FROM traces WHERE tenant_id = '{}' ORDER BY started_at DESC LIMIT 500", tid)
+        } else {
+            "SELECT * FROM traces WHERE tenant_id IS NULL ORDER BY started_at DESC LIMIT 500".to_string()
+        };
+        
+        let rows = self.client.query(&query).fetch_all::<ChTraceSummary>().await?;
         let traces = rows.into_iter().map(|r| TraceSummary {
             trace_id: Uuid::parse_str(&r.trace_id).unwrap_or_default(),
             name: r.name,
@@ -241,13 +266,22 @@ impl StorageBackend for ClickHouseStore {
             thread_ids: r.thread_ids,
             ai_cluster_key: r.ai_cluster_key,
             ai_summary: r.ai_summary,
+            tenant_id: r.tenant_id,
+            tags: r.tags,
+            assigned_to: r.assigned_to,
         }).collect();
         Ok(traces)
     }
 
-    async fn get_trace_events(&self, trace_id: Uuid) -> Result<Vec<TraceEvent>> {
+    async fn get_trace_events(&self, trace_id: Uuid, tenant_id: Option<String>) -> Result<Vec<TraceEvent>> {
         let tid_str = trace_id.to_string();
-        let rows = self.client.query("SELECT * FROM events WHERE trace_id = ? ORDER BY timestamp_ms ASC")
+        let query = if let Some(ten) = &tenant_id {
+            format!("SELECT * FROM events WHERE trace_id = ? AND tenant_id = '{}' ORDER BY timestamp_ms ASC", ten)
+        } else {
+            "SELECT * FROM events WHERE trace_id = ? AND tenant_id IS NULL ORDER BY timestamp_ms ASC".to_string()
+        };
+
+        let rows = self.client.query(&query)
             .bind(tid_str)
             .fetch_all::<ChEvent>().await?;
             
@@ -268,18 +302,26 @@ impl StorageBackend for ClickHouseStore {
             thread_id: r.thread_id,
             http_request: serde_json::from_str(&r.http_request).unwrap_or(None),
             db_query: serde_json::from_str(&r.db_query).unwrap_or(None),
+            tenant_id: r.tenant_id,
+            event_id: Some(r.event_id),
         }).collect();
         
         Ok(events)
     }
 
-    async fn clear_all(&self) -> Result<()> {
-        self.client.query("TRUNCATE TABLE traces").execute().await?;
-        self.client.query("TRUNCATE TABLE events").execute().await?;
+    async fn clear_all(&self, tenant_id: Option<String>) -> Result<()> {
+        let (t_cond, e_cond) = if let Some(tid) = &tenant_id {
+            (format!("WHERE tenant_id = '{}'", tid), format!("WHERE tenant_id = '{}'", tid))
+        } else {
+            ("WHERE tenant_id IS NULL".to_string(), "WHERE tenant_id IS NULL".to_string())
+        };
+
+        self.client.query(&format!("ALTER TABLE traces DELETE {}", t_cond)).execute().await?;
+        self.client.query(&format!("ALTER TABLE events DELETE {}", e_cond)).execute().await?;
         Ok(())
     }
 
-    async fn get_service_graph(&self) -> Result<serde_json::Value> {
+    async fn get_service_graph(&self, tenant_id: Option<String>) -> Result<serde_json::Value> {
         // Fallback implementation, can be done via complex SQL later
         Ok(serde_json::json!({
             "nodes": [],
@@ -287,9 +329,15 @@ impl StorageBackend for ClickHouseStore {
         }))
     }
 
-    async fn get_event_by_span_id(&self, span_id: Uuid) -> Result<Option<TraceEvent>> {
+    async fn get_event_by_span_id(&self, span_id: Uuid, tenant_id: Option<String>) -> Result<Option<TraceEvent>> {
         let sid_str = span_id.to_string();
-        let row = self.client.query("SELECT * FROM events WHERE span_id = ? LIMIT 1")
+        let query = if let Some(tid) = &tenant_id {
+            format!("SELECT * FROM events WHERE span_id = ? AND tenant_id = '{}' LIMIT 1", tid)
+        } else {
+            "SELECT * FROM events WHERE span_id = ? AND tenant_id IS NULL LIMIT 1".to_string()
+        };
+
+        let row = self.client.query(&query)
             .bind(sid_str)
             .fetch_optional::<ChEvent>().await?;
             
@@ -311,13 +359,15 @@ impl StorageBackend for ClickHouseStore {
                 thread_id: r.thread_id,
                 http_request: serde_json::from_str(&r.http_request).unwrap_or(None),
                 db_query: serde_json::from_str(&r.db_query).unwrap_or(None),
+                tenant_id: r.tenant_id,
+                event_id: Some(r.event_id),
             }))
         } else {
             Ok(None)
         }
     }
 
-    async fn get_clusters(&self) -> Result<serde_json::Value> {
+    async fn get_clusters(&self, tenant_id: Option<String>) -> Result<serde_json::Value> {
         Ok(serde_json::json!([])) // simplified
     }
 
@@ -351,7 +401,7 @@ impl StorageBackend for ClickHouseStore {
         Ok(nodes)
     }
 
-    async fn add_comment(&self, comment: crate::models::TraceComment) -> Result<()> {
+    async fn add_comment(&self, comment: crate::models::TraceComment, tenant_id: Option<String>) -> Result<()> {
         let mut inserter = self.client.insert::<ChComment>("comments").await?;
         let ch_comment = ChComment {
             comment_id: comment.comment_id.to_string(),
@@ -360,15 +410,22 @@ impl StorageBackend for ClickHouseStore {
             user_id: comment.user_id,
             text: comment.text,
             timestamp_ms: comment.timestamp_ms,
+            tenant_id,
         };
         inserter.write(&ch_comment).await?;
         inserter.end().await?;
         Ok(())
     }
 
-    async fn get_comments(&self, trace_id: Uuid) -> Result<Vec<crate::models::TraceComment>> {
+    async fn get_comments(&self, trace_id: Uuid, tenant_id: Option<String>) -> Result<Vec<crate::models::TraceComment>> {
         let tid_str = trace_id.to_string();
-        let rows = self.client.query("SELECT * FROM comments WHERE trace_id = ? ORDER BY timestamp_ms ASC")
+        let query = if let Some(ten) = &tenant_id {
+            format!("SELECT * FROM comments WHERE trace_id = ? AND tenant_id = '{}' ORDER BY timestamp_ms ASC", ten)
+        } else {
+            "SELECT * FROM comments WHERE trace_id = ? AND tenant_id IS NULL ORDER BY timestamp_ms ASC".to_string()
+        };
+
+        let rows = self.client.query(&query)
             .bind(tid_str)
             .fetch_all::<ChComment>().await?;
             
@@ -379,8 +436,48 @@ impl StorageBackend for ClickHouseStore {
             user_id: r.user_id,
             text: r.text,
             timestamp_ms: r.timestamp_ms,
+            tenant_id: r.tenant_id,
         }).collect();
         
         Ok(comments)
+    }
+
+    async fn update_trace_metadata(&self, trace_id: Uuid, tags: Option<Vec<String>>, assigned_to: Option<String>, tenant_id: Option<String>) -> Result<()> {
+        let tid_str = trace_id.to_string();
+        let mut updates = Vec::new();
+        if let Some(t) = tags { updates.push(format!("tags = {:?}", t)); } // simplified SQL representation
+        if let Some(a) = assigned_to { updates.push(format!("assigned_to = '{}'", a)); }
+        
+        if updates.is_empty() { return Ok(()); }
+        
+        let cond = if let Some(ten) = tenant_id {
+            format!("WHERE trace_id = ? AND tenant_id = '{}'", ten)
+        } else {
+            "WHERE trace_id = ? AND tenant_id IS NULL".to_string()
+        };
+
+        let query = format!("ALTER TABLE traces UPDATE {} {}", updates.join(", "), cond);
+        self.client.query(&query).bind(tid_str).execute().await?;
+        Ok(())
+    }
+
+    async fn cleanup_expired_data(&self, retention_days: u32) -> Result<()> {
+        let cutoff_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_millis() as u64 - (retention_days as u64 * 24 * 60 * 60 * 1000);
+
+        // Delete old traces
+        let traces_query = format!("ALTER TABLE traces DELETE WHERE started_at < {}", cutoff_ms);
+        self.client.query(&traces_query).execute().await?;
+
+        // Delete old events
+        let events_query = format!("ALTER TABLE events DELETE WHERE timestamp_ms < {}", cutoff_ms);
+        self.client.query(&events_query).execute().await?;
+
+        // Delete old comments
+        let comments_query = format!("ALTER TABLE comments DELETE WHERE timestamp_ms < {}", cutoff_ms);
+        self.client.query(&comments_query).execute().await?;
+
+        Ok(())
     }
 }

@@ -20,6 +20,7 @@ impl WsBroadcaster {
     }
 
     pub async fn handle_socket(&self, socket: WebSocket) {
+        crate::metrics::ACTIVE_CONNECTIONS.inc();
         let mut rx = self.sender.subscribe();
         let (mut ws_sender, mut ws_receiver) = socket.split();
 
@@ -50,5 +51,6 @@ impl WsBroadcaster {
         }
 
         send_task.abort();
+        crate::metrics::ACTIVE_CONNECTIONS.dec();
     }
 }

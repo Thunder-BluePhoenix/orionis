@@ -24,6 +24,8 @@ uuid = { version = "1.21.0", features = ["v4", "serde"] }
 async-trait = "0.1.89"
 clickhouse = "0.14.2"
 jsonwebtoken = "10.3.0"
+prometheus = "0.13.4"
+lazy_static = "1.5.0"
 
 [build-dependencies]
 protoc-bin-vendored = "3.2.0"
