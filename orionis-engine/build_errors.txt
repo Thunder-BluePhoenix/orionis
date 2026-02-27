@@ -1,0 +1,65 @@
+   Compiling orionis-engine v0.1.0 (F:\proj_guides\Orionis\orionis-engine)
+warning: unused import: `std::sync::Arc`
+ --> src\grpc.rs:3:5
+  |
+3 | use std::sync::Arc;
+  |     ^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+System.Management.Automation.RemoteException
+warning: unused import: `tokio::sync::mpsc`
+ --> src\grpc.rs:4:5
+  |
+4 | use tokio::sync::mpsc;
+  |     ^^^^^^^^^^^^^^^^^
+System.Management.Automation.RemoteException
+warning: unused import: `self`
+ --> src\grpc.rs:9:21
+  |
+9 | use crate::models::{self, AgentLanguage, EventType, TraceEvent, LocalVar};
+  |                     ^^^^
+System.Management.Automation.RemoteException
+error[E0308]: mismatched types
+  --> src\server.rs:82:50
+   |
+82 |         if let Some(owner) = s.cluster.get_owner(&ev.trace_id) {
+   |                                        --------- ^^^^^^^^^^^^ expected `&str`, found `&Uuid`
+   |                                        |
+   |                                        arguments to this method are incorrect
+   |
+   = note: expected reference `&str`
+              found reference `&Uuid`
+note: method defined here
+  --> src\clustering.rs:50:12
+   |
+50 |     pub fn get_owner(&self, trace_id: &str) -> Option<ClusterNode> {
+   |            ^^^^^^^^^        --------------
+System.Management.Automation.RemoteException
+error[E0507]: cannot move out of an `Arc`
+  --> src\main.rs:42:5
+   |
+42 |     cluster_manager.clone().start().await;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^ ------- value moved due to this method call
+   |     |
+   |     move occurs because value has type `ClusterManager`, which does not implement the `Copy` trait
+   |
+note: `ClusterManager::start` takes ownership of the receiver `self`, which moves value
+  --> src\clustering.rs:24:24
+   |
+24 |     pub async fn start(self) {
+   |                        ^^^^
+note: if `ClusterManager` implemented `Clone`, you could clone the value
+  --> src\clustering.rs:7:1
+   |
+ 7 | pub struct ClusterManager {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^ consider implementing `Clone` for this type
+   |
+  ::: src\main.rs:42:5
+   |
+42 |     cluster_manager.clone().start().await;
+   |     ----------------------- you could clone this value
+System.Management.Automation.RemoteException
+Some errors have detailed explanations: E0308, E0507.
+For more information about an error, try `rustc --explain E0308`.
+warning: `orionis-engine` (bin "orionis-engine") generated 3 warnings
+error: could not compile `orionis-engine` (bin "orionis-engine") due to 2 previous errors; 3 warnings emitted

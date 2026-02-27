@@ -18,19 +18,27 @@ use crate::{
 pub struct AppState {
     pub db: DbHandle,
     pub ws: WsBroadcaster,
+    pub cluster: std::sync::Arc<crate::clustering::ClusterManager>,
 }
 
 pub fn build_router(state: AppState) -> Router {
+    let api_router = Router::new()
+        .route("/traces",       get(list_traces))
+        .route("/traces/{id}",  get(get_trace))
+        .route("/ingest",       post(ingest))
+        .route("/graph",        get(get_graph))
+        .route("/replay/{id}",  post(replay))
+        .route("/ai/summarize/{id}", get(ai_summarize))
+        .route("/clusters",     get(get_clusters))
+        .route("/nodes",        get(list_nodes))
+        .route("/clear",        delete(clear_all))
+        .route("/traces/{id}/comments", get(list_comments))
+        .route("/traces/{id}/comments", post(add_comment))
+        .layer(axum::middleware::from_fn(crate::auth::auth_middleware));
+
     Router::new()
-        .route("/api/traces",       get(list_traces))
-        .route("/api/traces/{id}",  get(get_trace))
-        .route("/api/ingest",       post(ingest))
-        .route("/v1/traces",        post(otlp_ingress))
-        .route("/api/graph",        get(get_graph))
-        .route("/api/replay/{id}",  post(replay))
-        .route("/api/ai/summarize/{id}", get(ai_summarize))
-        .route("/api/clusters",     get(get_clusters))
-        .route("/api/clear",        delete(clear_all))
+        .nest("/api", api_router)
+        .route("/v1/traces",        post(otlp_ingress).layer(axum::middleware::from_fn(crate::auth::auth_middleware)))
         .route("/ws/live",          get(ws_handler))
         .route("/",                 get(serve_index))
         .layer(CorsLayer::permissive())
@@ -38,8 +46,15 @@ pub fn build_router(state: AppState) -> Router {
 }
 
 async fn list_traces(State(s): State<AppState>) -> impl IntoResponse {
-    match store::list_traces(&s.db) {
+    match s.db.list_traces().await {
         Ok(t)  => Json(t).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn list_nodes(State(s): State<AppState>) -> impl IntoResponse {
+    match s.db.list_nodes().await {
+        Ok(n)  => Json(n).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
@@ -49,7 +64,7 @@ async fn get_trace(State(s): State<AppState>, Path(id): Path<String>) -> impl In
         Ok(u)  => u,
         Err(_) => return (StatusCode::BAD_REQUEST, "Invalid trace ID").into_response(),
     };
-    match store::get_trace_events(&s.db, uuid) {
+    match s.db.get_trace_events(uuid).await {
         Ok(ev) => Json(ev).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
@@ -60,26 +75,55 @@ async fn ingest(State(s): State<AppState>, Json(payload): Json<IngestPayload>) -
         IngestPayload::Single(e) => vec![e],
         IngestPayload::Batch(v)  => v,
     };
-    for ev in &events {
-        if let Ok(json) = serde_json::to_string(ev) {
+
+    let mut local_events = Vec::new();
+    
+    for ev in events {
+        // Broadcaster for live updates
+        if let Ok(json) = serde_json::to_string(&ev) {
             s.ws.broadcast(json);
         }
+
+        // Determine which cluster node owns this trace_id (consistent hash)
+        if let Some(owner) = s.cluster.get_owner(ev.trace_id).await {
+            // Compare by node_id (UUID) — not by address, which can vary
+            if owner.node_id == s.cluster.node_id() {
+                // This node is the owner — store locally
+                local_events.push(ev);
+            } else {
+                // Forward to the owning node in background
+                let cluster = s.cluster.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = cluster.forward_event(&owner, ev).await {
+                        eprintln!("[Clustering] Forwarding failed: {}", e);
+                    }
+                });
+            }
+        } else {
+            // No nodes discovered yet — store locally (single-node mode)
+            local_events.push(ev);
+        }
     }
-    match store::ingest_events(&s.db, events) {
+
+    if local_events.is_empty() {
+        return StatusCode::OK.into_response();
+    }
+
+    match s.db.ingest_events(local_events).await {
         Ok(_)  => StatusCode::OK.into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
 
 async fn clear_all(State(s): State<AppState>) -> impl IntoResponse {
-    match store::clear_all(&s.db) {
+    match s.db.clear_all().await {
         Ok(_)  => StatusCode::OK.into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
 
 async fn get_graph(State(s): State<AppState>) -> impl IntoResponse {
-    match store::get_service_graph(&s.db) {
+    match s.db.get_service_graph().await {
         Ok(g)  => Json(g).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
@@ -91,7 +135,7 @@ async fn replay(Path(id): Path<String>, State(s): State<AppState>) -> impl IntoR
         Err(_) => return StatusCode::BAD_REQUEST.into_response(),
     };
 
-    let event = match store::get_event_by_span_id(&s.db, span_id) {
+    let event = match s.db.get_event_by_span_id(span_id).await {
         Ok(Some(e)) => e,
         _ => return StatusCode::NOT_FOUND.into_response(),
     };
@@ -137,7 +181,7 @@ async fn serve_index() -> impl IntoResponse {
 }
 
 async fn ai_summarize(Path(id): Path<Uuid>, State(s): State<AppState>) -> impl IntoResponse {
-    let events = crate::store::get_trace_events(&s.db, id).unwrap_or_default();
+    let events = s.db.get_trace_events(id).await.unwrap_or_default();
     if events.is_empty() {
         return Json(serde_json::json!({ "error": "Trace not found" }));
     }
@@ -150,7 +194,7 @@ async fn ai_summarize(Path(id): Path<Uuid>, State(s): State<AppState>) -> impl I
 
     let summary_str = summary.to_string();
     // Persist AI summary for clustering
-    let _ = crate::store::update_trace_ai(&s.db, id, summary_str, None);
+    let _ = s.db.update_trace_ai(id, summary_str, None).await;
 
     Json(serde_json::json!({
         "trace_id": id,
@@ -161,7 +205,7 @@ async fn ai_summarize(Path(id): Path<Uuid>, State(s): State<AppState>) -> impl I
 }
 
 async fn get_clusters(State(s): State<AppState>) -> axum::response::Response {
-    match crate::store::get_clusters(&s.db) {
+    match s.db.get_clusters().await {
         Ok(v) => Json(v).into_response(),
         Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
@@ -221,7 +265,7 @@ async fn otlp_ingress(State(s): State<AppState>, Json(body): Json<serde_json::Va
     
     if !events.is_empty() {
         let evs = events.clone();
-        if let Err(e) = crate::store::ingest_events(&s.db, evs) {
+        if let Err(e) = s.db.ingest_events(evs).await {
             return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
         }
         for ev in events {
@@ -232,4 +276,35 @@ async fn otlp_ingress(State(s): State<AppState>, Json(body): Json<serde_json::Va
     }
     
     StatusCode::OK.into_response()
+}
+
+async fn list_comments(Path(id): Path<Uuid>, State(s): State<AppState>) -> impl IntoResponse {
+    match s.db.get_comments(id).await {
+        Ok(c) => Json(c).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn add_comment(Path(id): Path<Uuid>, State(s): State<AppState>, Json(mut payload): Json<serde_json::Value>) -> impl IntoResponse {
+    // We accept a simplified payload and fill in the rest
+    let text = payload.get("text").and_then(|t| t.as_str()).unwrap_or("");
+    let user_id = payload.get("user_id").and_then(|u| u.as_str()).unwrap_or("anonymous");
+    let span_id = payload.get("span_id").and_then(|s| s.as_str()).and_then(|s| Uuid::parse_str(s).ok());
+    
+    let comment = crate::models::TraceComment {
+        comment_id: Uuid::new_v4(),
+        trace_id: id,
+        span_id,
+        user_id: user_id.to_string(),
+        text: text.to_string(),
+        timestamp_ms: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64,
+    };
+    
+    match s.db.add_comment(comment).await {
+        Ok(_) => StatusCode::CREATED.into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
 }

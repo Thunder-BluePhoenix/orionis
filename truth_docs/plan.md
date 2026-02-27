@@ -152,16 +152,25 @@ orionis/
  │    ├── src/
  │    └── Cargo.toml
  │
- ├── orionis-python/          # Python agent SDK
- │    ├── orionis/
- │    └── setup.py
+ ├── agents/
+ │    ├── python/              # Python agent — sys.setprofile(), pytest plugin
+ │    ├── go/                  # Go agent — goroutine-aware, middleware
+ │    ├── rust/                # Rust agent — macro-based native instrumentation
+ │    ├── cpp/                 # C++ agent — RAII, exception hooks, signals
+ │    ├── c/                   # C agent — cyg_profile hooks, signal capture
+ │    ├── node/                # Node.js agent — async_hooks, require hook
+ │    └── java/                # Java agent — JVM bytecode instrument, -javaagent
+ │
+ ├── orion-cli/               # `orion` CLI tool (Python)
  │
  ├── dashboard/               # Frontend UI
  │    ├── index.html
  │    ├── app.js
  │    └── styles.css
  │
- └── docs/                    # Documentation
+ ├── proto/                   # Protobuf definitions
+ │
+ └── truth_docs/              # Philosophy, plan, session summaries
 ```
 
 ---
@@ -185,10 +194,10 @@ orionis/
 
 ## Phased Build Plan
 
-### Phase 1 — Foundation: All 4 Agents + CLI (Months 1–6)
-**Goal: Ship a working local runtime intelligence engine with all 4 language agents from Day 1.**
+### Phase 1 — Foundation: All 7 Agents + CLI (Months 1–6)
+**Goal: Ship a working local runtime intelligence engine with all 7 language agents from Day 1.**
 
-> All four language agents — Python, Go, Rust, C++ — are built simultaneously. No phasing of languages. This is non-negotiable.
+> All seven language agents — Python, Go, Rust, C++, C, Java, Node.js — are built simultaneously. No phasing of languages. This is non-negotiable.
 
 | Month | Deliverable |
 |---|---|
@@ -197,6 +206,9 @@ orionis/
 | Month 3 | Go agent — middleware wrappers, goroutine-aware context propagation, panic interceptors |
 | Month 4 | Rust agent — native instrumentation macros, FFI event bridge to Orionis engine |
 | Month 5 | C++ agent — RAII-based instrumentation, macro tracing, exception hooks, signal capture |
+| Month 5 | C agent — lightweight `__cyg_profile_func_enter/exit` hooks, `SIGSEGV`/`SIGABRT` signal capture |
+| Month 5 | Node.js agent — `--require` hook, `async_hooks` API, unhandledRejection + uncaughtException capture |
+| Month 6 | Java agent — JVM bytecode agent via `-javaagent`, method enter/exit + exception capture |
 | Month 6 | `orion` CLI + UI + test integration — ship **v0.1** |
 
 **`orion` CLI (Day 1 commands):**
@@ -220,12 +232,15 @@ orion config                         # Show/edit configuration
 - ✅ Python tracing agent — global mode, module filter, variable snapshot
 - ✅ Go tracing agent — goroutine-aware, middleware, panic capture
 - ✅ Rust tracing agent — macro-based native instrumentation
-- ✅ C++ tracing agent — RAII instrumentation, exception hooks
+- ✅ C++ tracing agent — RAII instrumentation, exception hooks, signal capture
+- ✅ C tracing agent — `cyg_profile` hooks, signal interception, crash reporting
+- ✅ Node.js tracing agent — `async_hooks`, require hook, unhandledRejection capture
+- ✅ Java tracing agent — JVM `-javaagent`, bytecode instrumentation, exception capture
 - ✅ `orion init` — one-command setup, auto-detects language, scaffolds agent config
 - ✅ `orion` CLI with start / stop / replay / list / export / import / diff / watch
-- ✅ Panic/crash zero-config auto-detection — Rust panics, Go panics, C++ signals, Python exceptions auto-caught with NO setup needed beyond `orion start`
+- ✅ Panic/crash zero-config auto-detection — Rust panics, Go panics, C++ signals, Python exceptions, Node.js rejections, Java exceptions auto-caught with NO setup needed beyond `orion start`
 - ✅ Environment snapshot — capture env vars, OS info, config values at trace start (solves "works on my machine" forever)
-- ✅ Test framework auto-capture — `pytest`, `cargo test`, `go test` failures auto-traced
+- ✅ Test framework auto-capture — `pytest`, `cargo test`, `go test`, `npm test`, `mvn test` failures auto-traced
 - ✅ Trace export/import — `.otrace` portable file format for sharing failures
 - ✅ Dashboard UI — stack tree, timeline slider, variable panel, replay controls
 - ✅ DEV / SAFE / ERROR tracing modes
@@ -348,7 +363,7 @@ orion config                         # Show/edit configuration
 
 | Phase | Months | Version | Key Unlock |
 |---|---|---|---|
-| Phase 1 — Foundation | 1–6 | v0.1 | All 4 agents Day 1, `orion` CLI, test integration, trace export |
+| Phase 1 — Foundation | 1–6 | v0.1 | All 7 agents Day 1 (Python, Go, Rust, C++, C, Node.js, Java), `orion` CLI, test integration, trace export |
 | Phase 2 — Cross-Service | 7–11 | v0.2 | Cross-service graph, flamegraph, HTTP replay, async viz, OTEL |
 | Phase 3 — AI Intelligence | 12–16 | v0.3 | AI summarizer + root cause, DB lens, diff mode, benchmarked |
 | Phase 4 — Enterprise | 17–21 | v1.0 | Cluster, ClickHouse, SSO/RBAC, team collab, CI/CD |
@@ -362,8 +377,9 @@ orion config                         # Show/edit configuration
 |---|---|
 | Orionis Cloud | Fully managed SaaS hosted version |
 | Plugin marketplace | Community-built trace analyzers and exporters |
-| Language agent: Node.js | Full JS/TS ecosystem support |
-| Language agent: JVM | Java, Kotlin, Scala support via JVM bytecode instrumentation |
+| Language agent: Kotlin/Scala | JVM ecosystem extension — Kotlin, Scala via existing Java agent base |
+| Language agent: Ruby | `TracePoint` API-based tracing for Ruby/Rails |
+| Language agent: PHP | `xdebug`-compatible hooks for PHP trace capture |
 | WebAssembly agent | Trace WASM execution in browser and edge environments |
 | IDE integrations | VS Code + JetBrains plugins for inline trace viewing |
 
@@ -408,7 +424,7 @@ Do NOT build early:
 - ❌ Multi-tenant dashboards (Phase 4)
 - ❌ Cloud / SaaS (Phase 5)
 
-**Ship Phase 1 first. All 4 agents. The CLI. The UI. Correct and clean.**
+**Ship Phase 1 first. All 7 agents. The CLI. The UI. Correct and clean.**
 
 ---
 
@@ -417,7 +433,7 @@ Do NOT build early:
 Even without AI. Even without cross-service graphs.
 
 If Orionis delivers at v0.1:
-- ✅ All 4 language agents working on Day 1
+- ✅ All 7 language agents working on Day 1 (Python, Go, Rust, C++, C, Node.js, Java)
 - ✅ `orion init` — zero friction setup, language auto-detected
 - ✅ Panic/crash auto-caught with zero config — just `orion start`
 - ✅ Environment snapshot at every trace start
@@ -425,7 +441,7 @@ If Orionis delivers at v0.1:
 - ✅ Variable snapshots per frame
 - ✅ Time slider replay with step-back
 - ✅ `orion` CLI that just works
-- ✅ Auto-capture test failures from pytest / cargo test / go test
+- ✅ Auto-capture test failures from pytest / cargo test / go test / npm test / mvn test
 - ✅ Export a `.otrace` file and share a bug with a teammate in seconds
 
 **That is already something no existing dev tool provides in one package.**
@@ -444,7 +460,7 @@ Things confirmed for correct phases but not in Phase 1:
 | Panic/crash zero-config auto-detection | Phase 1 (Day 1) |
 | Environment snapshot at trace start | Phase 1 (Day 1) |
 | OpenTelemetry import/export compatibility | Phase 2 |
-| Async/concurrent execution lanes (goroutines, asyncio, Tokio) | Phase 2 |
+| Async/concurrent execution lanes (goroutines, asyncio, Tokio, Node.js event loop) | Phase 2 |
 | HTTP request replay | Phase 2 |
 | Flamegraph overlay on execution tree | Phase 2 |
 | AI trace summarizer + root cause | Phase 3 |
@@ -455,8 +471,9 @@ Things confirmed for correct phases but not in Phase 1:
 | Production crash sandbox replay | Phase 5 |
 | Security / regression anomaly detection | Phase 5 |
 | IDE plugins — VS Code + JetBrains | Post v2.0 |
-| Node.js / JVM / WASM agents | Post v2.0 |
+| Kotlin/Scala/Ruby/PHP agents | Post v2.0 |
+| WASM agent | Post v2.0 |
 
 ---
 
-*Product name: Orionis | Plan version: 2.0 | Date: 2026-02-24*
+*Product name: Orionis | Plan version: 3.0 | Date: 2026-02-27 | Agents: Python, Go, Rust, C++, C, Node.js, Java*

@@ -67,6 +67,9 @@ enum AgentLanguage {
   LANG_GO = 2;
   LANG_RUST = 3;
   LANG_CPP = 4;
+  LANG_C = 5;
+  LANG_JAVA = 6;
+  LANG_NODE = 7;
 }
 
 message LocalVar {

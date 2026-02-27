@@ -47,8 +47,31 @@ namespace orionis {
 
 // ── Config ────────────────────────────────────────────────────────────────────
 inline std::string engine_url = "http://localhost:7700";
+inline std::string engine_host = "127.0.0.1";  // parsed from engine_url
+inline int         engine_port = 7700;           // parsed from engine_url
+inline std::string module_name = "cpp_app";     // set via start(url, module)
 inline std::string trace_id;
 inline std::atomic<bool> running{false};
+
+// Parse host and port from a URL like "http://myhost:9000"
+inline void _parse_url(const std::string& url) {
+    // Strip scheme
+    std::string rest = url;
+    auto scheme_end = rest.find("://");
+    if (scheme_end != std::string::npos) rest = rest.substr(scheme_end + 3);
+    // Strip path
+    auto slash = rest.find('/');
+    if (slash != std::string::npos) rest = rest.substr(0, slash);
+    // Split host:port
+    auto colon = rest.rfind(':');
+    if (colon != std::string::npos) {
+        engine_host = rest.substr(0, colon);
+        try { engine_port = std::stoi(rest.substr(colon + 1)); } catch (...) {}
+    } else {
+        engine_host = rest;
+        engine_port = 80;
+    }
+}
 
 // ── WSA init (Windows only, done once at start()) ─────────────────────────────
 #ifdef _WIN32
@@ -242,7 +265,8 @@ inline void flush() {
         if (i + 1 < to_send.size()) body += ",";
     }
     body += "]";
-    post_json("127.0.0.1", 7700, "/api/ingest", body);
+    // Use parsed host:port from engine_url — not hardcoded
+    post_json(engine_host, engine_port, "/api/ingest", body);
 }
 
 // ── Signal / Crash Handler ────────────────────────────────────────────────────
@@ -352,10 +376,15 @@ inline void extract_trace_headers(const std::map<std::string, std::string>& head
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-inline void start(const std::string& url = "http://localhost:7700") {
-    engine_url = url;
-    trace_id   = new_uuid();
-    running    = true;
+inline void start(const std::string& url = "http://localhost:7700",
+                  const std::string& mod = "cpp_app") {
+    engine_url  = url;
+    module_name = mod;
+    trace_id    = new_uuid();
+    running     = true;
+
+    // Parse host + port from URL once at startup
+    _parse_url(url);
 
     // Init Winsock ONCE — safe for subsequent calls from signal handlers
     _ensure_wsa();
@@ -417,6 +446,7 @@ public:
         ev.timestamp_ms  = now_ms();
         ev.event_type    = "function_enter";
         ev.function_name = fn_name;
+        ev.module        = module_name;  // FIX: was missing
         ev.file          = file;
         ev.line          = line;
         ev.duration_us   = -1;
@@ -434,6 +464,7 @@ public:
         ev.timestamp_ms   = now_ms();
         ev.event_type     = "function_exit";
         ev.function_name  = fn_name;
+        ev.module         = module_name;  // FIX: was missing
         ev.file           = file;
         ev.line           = line;
         ev.duration_us    = dur;

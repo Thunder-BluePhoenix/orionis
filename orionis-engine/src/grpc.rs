@@ -101,7 +101,7 @@ impl proto::ingest_server::Ingest for IngestService {
             }
 
             // Ingest to database immediately
-            if let Err(e) = crate::store::ingest_events(&self.db, vec![ev]) {
+            if let Err(e) = self.db.ingest_events(vec![ev]).await {
                 tracing::error!("Database error during gRPC stream: {}", e);
             }
         }

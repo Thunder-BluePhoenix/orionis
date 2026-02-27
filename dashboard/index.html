@@ -485,6 +485,82 @@
     .sql-fun {
       color: #50fa7b;
     }
+
+    /* ── AI Panel ───────────────────────────────────────────────────────── */
+    .ai-panel {
+      padding: 14px;
+      border-bottom: 1px solid var(--border);
+      background: rgba(167, 139, 250, 0.05);
+      display: none;
+      animation: slideDown 0.4s ease-out;
+    }
+
+    @keyframes slideDown {
+      from {
+        opacity: 0;
+        transform: translateY(-10px);
+      }
+
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    .ai-panel.active {
+      display: block;
+    }
+
+    .ai-title {
+      font-size: 10px;
+      font-weight: 700;
+      color: var(--accent2);
+      letter-spacing: 0.5px;
+      margin-bottom: 6px;
+    }
+
+    .ai-summary {
+      font-size: 12px;
+      line-height: 1.5;
+      color: var(--text);
+    }
+
+    /* ── Collaboration Panel ────────────────────────────────────────────── */
+    .comment-row {
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--border);
+      animation: fadeIn 0.3s ease-out;
+    }
+
+    @keyframes fadeIn {
+      from {
+        opacity: 0;
+        transform: translateY(4px);
+      }
+
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    .comment-user {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--accent2);
+    }
+
+    .comment-text {
+      margin-top: 4px;
+      font-size: 12px;
+      line-height: 1.4;
+      color: var(--text);
+    }
+
+    .comment-time {
+      font-size: 10px;
+      color: var(--muted);
+    }
   </style>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <script src="https://d3js.org/d3.v7.min.js"></script>
@@ -540,6 +616,7 @@
           <span style="cursor:pointer" id="tab-flame" onclick="switchTab('flame')">Flamegraph</span>
           <span style="cursor:pointer" id="tab-graph" onclick="switchTab('graph')">Service Graph</span>
           <span style="cursor:pointer" id="tab-clusters" onclick="switchTab('clusters')">Failure Clusters</span>
+          <span style="cursor:pointer" id="tab-nodes" onclick="switchTab('nodes')">Cluster Nodes</span>
         </div>
       </div>
       <div class="timeline-bar" id="timeline-bar" style="display:none">
@@ -570,6 +647,10 @@
       <div class="panel-body" id="clusters-panel" style="display:none;padding:16px">
         <div id="clusters-container"></div>
       </div>
+
+      <div class="panel-body" id="nodes-panel" style="display:none;padding:16px">
+        <div id="nodes-container"></div>
+      </div>
       <div class="controls" id="replay-controls" style="display:none">
         <button onclick="stepBack()">◀ Back</button>
         <button onclick="togglePlay()" id="play-btn">▶ Play</button>
@@ -598,6 +679,23 @@
         <div class="empty-state">
           <div class="icon">🔬</div>
           <span>Select a frame</span>
+        </div>
+      </div>
+
+      <!-- Collaboration Section -->
+      <div class="panel-header" style="border-top: 1px solid var(--border)"><span>Collaboration</span></div>
+      <div class="panel-body" id="comments-panel" style="flex: 0 0 240px; border-top: 1px solid var(--border)">
+        <div class="empty-state" style="padding: 24px 0;">
+          <span>No comments yet</span>
+        </div>
+      </div>
+      <div class="search-bar"
+        style="border-top: 1px solid var(--border); border-bottom: none; background: var(--surface)">
+        <div style="display:flex; gap: 8px;">
+          <input type="text" id="comment-input" placeholder="Add annotation..."
+            onkeypress="if(event.key==='Enter') addComment()">
+          <button class="primary" onclick="addComment()"
+            style="padding: 4px 12px; height: 28px; display:flex; align-items:center">Post</button>
         </div>
       </div>
     </div>
@@ -674,10 +772,63 @@
       activeId = id;
       step = 0;
       loadAISummary(id);
+      loadComments(id);
       if (diffMode) renderDiff(); // Just update primary side
       else {
         renderTimeline();
         renderStack();
+      }
+    }
+
+    async function loadComments(id) {
+      const panel = document.getElementById('comments-panel');
+      if (!panel) return;
+      panel.innerHTML = '<div style="padding:14px;font-size:11px;color:var(--muted)">Loading comments...</div>';
+      try {
+        const res = await fetch(`/api/traces/${id}/comments`);
+        const comments = await res.json();
+        if (comments.length === 0) {
+          panel.innerHTML = '<div class="empty-state" style="padding:24px 0;"><span>No annotations yet</span></div>';
+        } else {
+          panel.innerHTML = comments.map(c => `
+            <div class="comment-row">
+              <div style="display:flex;justify-content:space-between;align-items:center">
+                <span class="comment-user">@${c.user_id}</span>
+                <span class="comment-time">${new Date(c.timestamp_ms).toLocaleTimeString()}</span>
+              </div>
+              <div class="comment-text">${escHtml(c.text)}</div>
+              ${c.span_id ? `<div style="font-size:9px;color:var(--accent);margin-top:4px">Pinned to span ${c.span_id.slice(0, 8)}</div>` : ''}
+            </div>
+          `).join('');
+        }
+      } catch (e) {
+        panel.innerHTML = '<div style="padding:14px;color:var(--error)">Failed to load comments</div>';
+      }
+    }
+
+    async function addComment() {
+      const input = document.getElementById('comment-input');
+      const text = input.value.trim();
+      if (!text || !activeId) return;
+
+      const payload = {
+        text: text,
+        user_id: 'engineer',
+        span_id: events[step]?.span_id
+      };
+
+      try {
+        const res = await fetch(`/api/traces/${activeId}/comments`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        if (res.status === 201) {
+          input.value = '';
+          loadComments(activeId);
+        }
+      } catch (e) {
+        console.error('Comment error:', e);
       }
     }
 
@@ -867,6 +1018,7 @@
       document.getElementById('tab-flame').className = tab === 'flame' ? 'active-tab' : '';
       document.getElementById('tab-graph').className = tab === 'graph' ? 'active-tab' : '';
       document.getElementById('tab-clusters').className = tab === 'clusters' ? 'active-tab' : '';
+      document.getElementById('tab-nodes').className = tab === 'nodes' ? 'active-tab' : '';
 
       document.getElementById('stack-panel').style.display = tab === 'timeline' ? '' : 'none';
       document.getElementById('timeline-bar').style.display = (tab === 'timeline' || tab === 'flame') && events.length ? '' : 'none';
@@ -875,10 +1027,44 @@
       document.getElementById('graph-panel').style.display = tab === 'graph' ? '' : 'none';
       document.getElementById('flame-panel').style.display = tab === 'flame' ? '' : 'none';
       document.getElementById('clusters-panel').style.display = tab === 'clusters' ? '' : 'none';
+      document.getElementById('nodes-panel').style.display = tab === 'nodes' ? '' : 'none';
 
       if (tab === 'graph') loadGraph();
       if (tab === 'flame') renderFlamegraph();
       if (tab === 'clusters') loadClusters();
+      if (tab === 'nodes') loadNodes();
+    }
+
+    async function loadNodes() {
+      const res = await fetch('/api/nodes');
+      const nodes = await res.json();
+      renderNodes(nodes);
+    }
+
+    function renderNodes(nodes) {
+      const el = document.getElementById('nodes-container');
+      if (!nodes.length) {
+        el.innerHTML = `<div class="empty-state">No cluster nodes detected</div>`;
+        return;
+      }
+      el.innerHTML = `
+        <div style="display:grid;grid-template-columns:repeat(auto-fill, minmax(280px, 1fr));gap:16px">
+          ${nodes.map(n => {
+        const isLive = (Date.now() - n.last_seen) < 15000;
+        return `
+            <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:16px;display:flex;flex-direction:column;gap:12px">
+              <div style="display:flex;justify-content:space-between;align-items:center">
+                <span style="font-weight:600;font-size:13px">${isLive ? '🟢' : '🔴'} Node ${n.node_id.slice(0, 8)}</span>
+                <span class="badge ${n.status === 'active' ? 'ok' : 'error'}">${n.status}</span>
+              </div>
+              <div style="font-size:11px;color:var(--muted)">
+                <div><b>HTTP:</b> ${n.http_addr}</div>
+                <div><b>gRPC:</b> ${n.grpc_addr}</div>
+                <div style="margin-top:4px"><b>Last Seen:</b> ${new Date(n.last_seen).toLocaleTimeString()}</div>
+              </div>
+            </div>`;
+      }).join('')}
+        </div>`;
     }
 
     async function loadClusters() {
@@ -924,7 +1110,7 @@
       if (!width || !height) return;
 
       const simulation = d3.forceSimulation(data.nodes)
-        .force("link", d3.forceLink(data.links).id(d).id(d => d.id).distance(100))
+        .force("link", d3.forceLink(data.links).id(d => d.id).distance(100))
         .force("charge", d3.forceManyBody().strength(-300))
         .force("center", d3.forceCenter(width / 2, height / 2));
 

@@ -1,0 +1,40 @@
+name: 'Orionis CI/CD Trace Capture'
+description: 'Wraps test commands to capture runtime traces on failure and upload them as artifacts.'
+author: 'Orionis Team'
+
+inputs:
+  command:
+    description: 'The test command to execute (e.g., "npm test", "pytest")'
+    required: true
+  engine_url:
+    description: 'Orionis engine endpoint for live streaming (optional)'
+    required: false
+    default: 'http://localhost:7700'
+  api_key:
+    description: 'API key for authenticating with the engine'
+    required: false
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Set up Orion CLI
+      shell: bash
+      run: |
+        echo "Installing Orionis CLI..."
+        pip install ./orion-cli
+    
+    - name: Execute with Orion Watch
+      shell: bash
+      env:
+        ORIONIS_ENGINE_URL: ${{ inputs.engine_url }}
+        ORIONIS_API_KEY: ${{ inputs.api_key }}
+      run: |
+        orion watch ${{ inputs.command }}
+
+    - name: Archive Traces on Failure
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: orionis-failure-trace
+        path: .otrace/
+        retention-days: 7

@@ -32,6 +32,13 @@ pub struct LocalVar {
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
+pub struct HttpRequest {
+    pub method: String,
+    pub url: String,
+    pub headers: std::collections::HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct TraceEvent {
     pub trace_id: String,
     pub span_id: String,
@@ -47,6 +54,7 @@ pub struct TraceEvent {
     pub duration_us: Option<u64>,
     pub language: String,
     pub thread_id: String,
+    pub http_request: Option<HttpRequest>,
 }
 
 // ── Senders ──────────────────────────────────────────────────────────────────
@@ -124,11 +132,14 @@ impl Sender for GrpcSender {
 
 // ── Agent ─────────────────────────────────────────────────────────────────────
 
+thread_local! {
+    static THREAD_TRACE_ID: std::cell::RefCell<Option<String>> = std::cell::RefCell::new(None);
+}
+
 pub struct Agent {
     pub engine_url: String,
     pub grpc_url: String,
     pub use_grpc: bool,
-    pub trace_id: Mutex<String>,
     batch: Mutex<VecDeque<TraceEvent>>,
     sender: Box<dyn Sender>,
 }
@@ -147,7 +158,6 @@ impl Agent {
             engine_url: engine_url.to_string(),
             grpc_url: grpc_url.to_string(),
             use_grpc,
-            trace_id: Mutex::new(Uuid::new_v4().to_string()),
             batch: Mutex::new(VecDeque::new()),
             sender,
         })
@@ -165,6 +175,40 @@ impl Agent {
         };
         if events.is_empty() { return; }
         self.sender.send(events);
+    }
+}
+
+pub fn reset_trace() {
+    THREAD_TRACE_ID.with(|tid| {
+        *tid.borrow_mut() = Some(Uuid::new_v4().to_string());
+    });
+}
+
+pub fn get_trace_id() -> String {
+    THREAD_TRACE_ID.with(|tid| {
+        let mut t = tid.borrow_mut();
+        if t.is_none() {
+            *t = Some(Uuid::new_v4().to_string());
+        }
+        t.clone().unwrap()
+    })
+}
+
+pub fn inject_trace_headers(headers: &mut std::collections::HashMap<String, String>) {
+    let tid = get_trace_id().replace("-", "");
+    headers.insert("traceparent".to_string(), format!("00-{}-0000000000000000-01", tid));
+}
+
+pub fn extract_trace_headers(headers: &std::collections::HashMap<String, String>) {
+    if let Some(tp) = headers.get("traceparent") {
+        if tp.len() >= 55 {
+            let tid_raw = &tp[3..35];
+            let tid = format!("{}-{}-{}-{}-{}", 
+                &tid_raw[0..8], &tid_raw[8..12], &tid_raw[12..16], &tid_raw[16..20], &tid_raw[20..32]);
+            THREAD_TRACE_ID.with(|t| {
+                *t.borrow_mut() = Some(tid);
+            });
+        }
     }
 }
 
@@ -191,7 +235,7 @@ pub fn install_panic_hook(ag: Arc<Agent>) {
             .unwrap_or_else(|| ("unknown".into(), 0));
 
         ag.enqueue(TraceEvent {
-            trace_id: ag.trace_id.lock().unwrap().clone(),
+            trace_id: get_trace_id(),
             span_id: Uuid::new_v4().to_string(),
             parent_span_id: None,
             timestamp_ms: now_ms(),
@@ -205,6 +249,7 @@ pub fn install_panic_hook(ag: Arc<Agent>) {
             duration_us: None,
             language: "rust".into(),
             thread_id: format!("{:?}", thread::current().id()),
+            http_request: None,
         });
         ag.flush();
     }));
@@ -250,7 +295,7 @@ impl SpanGuard {
         let span_id = Uuid::new_v4().to_string();
         if let Some(ag) = GLOBAL.get() {
             ag.enqueue(TraceEvent {
-                trace_id: ag.trace_id.lock().unwrap().clone(),
+                trace_id: get_trace_id(),
                 span_id: span_id.clone(),
                 parent_span_id: None,
                 timestamp_ms: now_ms(),
@@ -264,6 +309,7 @@ impl SpanGuard {
                 duration_us: None,
                 language: "rust".into(),
                 thread_id: format!("{:?}", thread::current().id()),
+                http_request: None,
             });
         }
         Self { span_id, fn_name: fn_name.into(), module: module.into(), file: file.into(), line, start: Instant::now() }
@@ -275,7 +321,7 @@ impl Drop for SpanGuard {
         let dur = self.start.elapsed().as_micros() as u64;
         if let Some(ag) = GLOBAL.get() {
             ag.enqueue(TraceEvent {
-                trace_id: ag.trace_id.lock().unwrap().clone(),
+                trace_id: get_trace_id(),
                 span_id: Uuid::new_v4().to_string(),
                 parent_span_id: Some(self.span_id.clone()),
                 timestamp_ms: now_ms(),
@@ -289,6 +335,7 @@ impl Drop for SpanGuard {
                 duration_us: Some(dur),
                 language: "rust".into(),
                 thread_id: format!("{:?}", thread::current().id()),
+                http_request: None,
             });
         }
     }

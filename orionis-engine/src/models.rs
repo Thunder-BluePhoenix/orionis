@@ -79,6 +79,9 @@ pub enum AgentLanguage {
     Go,
     Rust,
     Cpp,
+    C,
+    Java,
+    Node,
     Unknown,
 }
 
@@ -117,4 +120,33 @@ pub struct TraceSummary {
 pub enum IngestPayload {
     Single(TraceEvent),
     Batch(Vec<TraceEvent>),
+}
+
+/// Information about a node in the Orionis cluster.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClusterNode {
+    pub node_id: String,
+    pub http_addr: String,
+    pub grpc_addr: String,
+    pub status: NodeStatus,
+    pub last_seen: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum NodeStatus {
+    Active,
+    Inactive,
+    Diverged,
+}
+
+/// A comment or annotation left by a user on a specific trace or span.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TraceComment {
+    pub comment_id: Uuid,
+    pub trace_id: Uuid,
+    pub span_id: Option<Uuid>,
+    pub user_id: String,
+    pub text: String,
+    pub timestamp_ms: u64,
 }

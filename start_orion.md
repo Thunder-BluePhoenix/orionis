@@ -1,4 +1,4 @@
-# 🚀 Orionis: Start-to-Finish Guide
+﻿# Orionis 🌌: Start-to-Finish Guide
 
 Welcome to Orionis! This guide will walk you through setting up the engine and instrumenting your first multi-language application.
 
@@ -8,11 +8,11 @@ Welcome to Orionis! This guide will walk you through setting up the engine and i
 
 The Engine is the central brain that collects, stores, and analyzes your traces.
 
-1. Navigate to the engine directory:
+1. **Navigate to the engine directory:**
    ```bash
    cd orionis-engine
    ```
-2. Build and run:
+2. **Build and run:**
    ```bash
    cargo run --release
    ```
@@ -24,16 +24,13 @@ The Engine is the central brain that collects, stores, and analyzes your traces.
 
 The Python agent provides global tracing for any Flask, Django, or generic Python application.
 
-1. **Install the Agent:**
-   Ensure the `agents/python/orionis` folder is in your Python path.
-
-2. **Instrument your code:**
+1. **Instrument your code:**
    ```python
    import orionis
 
    # Start global tracing
    orionis.start(
-       include_modules=["myapp"], 
+       include_modules=["myapp"],
        engine_url="http://localhost:7700"
    )
 
@@ -44,8 +41,7 @@ The Python agent provides global tracing for any Flask, Django, or generic Pytho
        return "Hello World"
    ```
 
-3. **Enable Data Propagation:**
-   Wrap your app with the middleware to stitch incoming traces from other services:
+2. **Middleware for trace propagation:**
    ```python
    app.wsgi_app = orionis.WSGIMiddleware(app.wsgi_app)
    ```
@@ -54,12 +50,9 @@ The Python agent provides global tracing for any Flask, Django, or generic Pytho
 
 ## 3. Instrumenting Go
 
-The Go agent is designed for high-performance manual and semi-automatic tracing.
+The Go agent is designed for high-performance manual and semi-automated tracing.
 
-1. **Install:**
-   Add the `orionis` package to your project.
-
-2. **Initialize:**
+1. **Initialize:**
    ```go
    import "orionis"
 
@@ -72,44 +65,74 @@ The Go agent is designed for high-performance manual and semi-automatic tracing.
    }
    ```
 
-3. **Trace Functions:**
+2. **Trace Functions:**
    ```go
    func ProcessOrder() {
        defer orionis.Trace()() // Automatically captures entry, exit, and timing
-       // ... your logic
-   }
-   ```
-
-4. **Outgoing Requests:**
-   Use the `TraceRoundTripper` to automatically inject trace headers:
-   ```go
-   client := &http.Client{
-       Transport: &orionis.TraceRoundTripper{},
    }
    ```
 
 ---
 
-## 4. Using the Dashboard
+## 4. Instrumenting Rust
 
-Open your browser to `http://localhost:7700` (or open `dashboard/index.html`).
+The Rust agent uses `OnceLock` for global management and thread-locals for trace context.
 
-### 📊 Timeline View
-Click any trace in the sidebar to see the full execution flow. Events like SQL queries and Exceptions are highlighted.
+1. **Start:**
+   ```rust
+   orionis::start("http://localhost:7700");
+   ```
 
-### 🤖 AI Insight
-If a trace is active, click the **"Connect AI"** toggle and look for the **AI Insight** panel. It will automatically explain what happened and suggest fixes for failures.
-
-### 📁 Failure Clusters
-Go to the **"Failure Clusters"** tab. Orionis groups identical failure patterns together so you can see which bug is impacting your users the most.
-
-### 🌗 Visual Diff
-1. View a "Bad" trace.
-2. Click **"Compare"** on a "Good" trace in the list.
-3. The UI will highlight the **Point of Departure** (the exact moment the execution diverged) in red.
+2. **Trace with Macros:**
+   ```rust
+   #[orionis::orion_trace]
+   fn some_work() {
+       // ... logic
+   }
+   ```
 
 ---
 
-## 💡 Pro-Tips
-- **Mode Toggle:** Use `mode="error"` in production to only capture traces that fail, saving storage and performance.
-- **SQL Capture:** Always use `capture_query` for critical DB operations to get the syntax-highlighted lens in the UI.
+## 5. Instrumenting C, Java, and Node.js
+
+### C (Pure C11)
+Include `orionis.h` and use the `ORIONIS_TRACE()` macro.
+```c
+#include "orionis.h"
+orionis_start("http://localhost:7700");
+ORIONIS_TRACE();
+```
+
+### Java (JVM SDK)
+Use the `Orionis.Span` try-with-resources.
+```java
+try (Orionis.Span span = new Orionis.Span("myFunc", "file.java", 10)) {
+    // code
+}
+```
+
+### Node.js (AsyncLocalStorage)
+Wrap functions with `orionis.trace()`.
+```javascript
+const orionis = require('./orionis');
+orionis.trace('myTask', async () => {
+    // automagically propagates trace context
+});
+```
+
+---
+
+## 6. Using the Dashboard
+
+Open your browser to [http://localhost:7700](http://localhost:7700).
+
+- **Timeline View:** Click any trace to see the full execution flow.
+- **AI Insight:** Look for the **AI Insight** panel on failing traces.
+- **Failure Clusters:** View grouped identical failure patterns in the sidebar.
+- **Visual Diff:** Click **Compare** on a "Good" trace after viewing a "Bad" one.
+
+---
+
+## ⚖️ Pro-Tips
+- **Trace Propagation:** Ensure all services use the provided `inject/extract` helpers to maintain trace continuity across language boundaries.
+- **SQL Capture:** Always use the specialized query capture for deep inspection.
