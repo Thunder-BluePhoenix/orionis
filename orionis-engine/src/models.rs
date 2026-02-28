@@ -476,3 +476,41 @@ pub struct SecurityAlert {
     pub timestamp_ms: u64,
     pub tenant_id: Option<String>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SimulationRule {
+    pub rule_id: Uuid,
+    pub tenant_id: Option<String>,
+    pub target_function: String,
+    pub target_module: Option<String>,
+    pub action: String, // e.g. "delay", "exception", "modify_return"
+    pub error_payload: Option<String>,
+    pub delay_ms: Option<u64>,
+    pub active: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum TenantTier {
+    Free,
+    Pro,
+    Enterprise,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TenantUsage {
+    pub tenant_id: String,
+    pub tier: TenantTier,
+    pub traces_ingested_today: u64,
+    pub last_reset_timestamp: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PluginRegistration {
+    pub plugin_id: Uuid,
+    pub tenant_id: Option<String>,
+    pub name: String,
+    pub webhook_url: String,
+    pub subscribed_events: Vec<String>, // e.g. "security_alert", "high_risk_trace"
+    pub active: bool,
+}

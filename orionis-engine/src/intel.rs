@@ -72,4 +72,58 @@ impl IntelligenceEngine {
             "overall_recommendation": if bottlenecks.is_empty() { "Performance within targets." } else { "Multiple bottlenecks detected in core logic path." }
         }))
     }
+
+    pub async fn analyze_memory_leaks(&self, trace_id: Uuid, tenant_id: Option<String>) -> Result<serde_json::Value> {
+        let events = self.db.get_trace_events(trace_id, tenant_id).await?;
+        if events.is_empty() { return Err(anyhow::anyhow!("Trace not found")); }
+
+        let mut leaking_spans = Vec::new();
+        let mut total_retained = 0;
+
+        // Simplified heuristic: Find exit events with memory significantly higher than enter events
+        // (Assuming a simplified data model where exits hold the delta or final state)
+        for e in &events {
+            if let Some(mem) = e.memory_usage_bytes {
+                if mem > 10_000_000 { // Retained > 10MB
+                    leaking_spans.push(serde_json::json!({
+                        "span_id": e.span_id,
+                        "function": e.function_name,
+                        "retained_bytes": mem,
+                        "suggestion": "Large continuous allocation detected. Check for unreleased collections or missing garbage collection triggers."
+                    }));
+                    total_retained += mem;
+                }
+            }
+        }
+
+        Ok(serde_json::json!({
+            "trace_id": trace_id,
+            "total_abnormal_retention_bytes": total_retained,
+            "leaking_spans": leaking_spans,
+            "status": if leaking_spans.is_empty() { "Healthy" } else { "Memory Leak Detected" }
+        }))
+    }
+
+    pub async fn generate_sandbox_replay(&self, trace_id: Uuid, tenant_id: Option<String>) -> Result<serde_json::Value> {
+        let events = self.db.get_trace_events(trace_id, tenant_id).await?;
+        if events.is_empty() { return Err(anyhow::anyhow!("Trace not found")); }
+
+        let structural_hash = TraceSummary::calculate_structural_hash(&events);
+        
+        // Strip sensitive data for the sandbox
+        let mut clean_events = Vec::new();
+        for mut e in events {
+            e.locals = None; // Strip PII/Secrets
+            clean_events.push(e);
+        }
+
+        Ok(serde_json::json!({
+            "replay_ticket": Uuid::new_v4(),
+            "trace_id": trace_id,
+            "structural_hash": structural_hash,
+            "event_count": clean_events.len(),
+            "sandbox_payload": clean_events,
+            "instructions": "Download this payload to run `orion replay --sandbox <file>` locally."
+        }))
+    }
 }

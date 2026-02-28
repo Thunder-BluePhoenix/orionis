@@ -688,6 +688,36 @@ impl StorageBackend for ClickHouseStore {
         // Not fully implemented for ClickHouse backend yet
         Ok(serde_json::json!([]))
     }
+
+    // --- Phase 5.5: Simulation & SaaS (Stubbed for ClickHouse for now) ---
+    async fn save_simulation_rule(&self, _rule: crate::models::SimulationRule) -> Result<()> {
+        Ok(())
+    }
+    async fn get_simulation_rules(&self, _tenant_id: Option<String>) -> Result<Vec<crate::models::SimulationRule>> {
+        Ok(Vec::new())
+    }
+    async fn increment_tenant_usage(&self, tenant_id: &str) -> Result<crate::models::TenantUsage> {
+        Ok(crate::models::TenantUsage {
+            tenant_id: tenant_id.to_string(),
+            tier: crate::models::TenantTier::Free,
+            traces_ingested_today: 0,
+            last_reset_timestamp: 0,
+        })
+    }
+    async fn get_tenant_usage(&self, tenant_id: &str) -> Result<crate::models::TenantUsage> {
+        Ok(crate::models::TenantUsage {
+            tenant_id: tenant_id.to_string(),
+            tier: crate::models::TenantTier::Free,
+            traces_ingested_today: 0,
+            last_reset_timestamp: 0,
+        })
+    }
+    async fn register_plugin(&self, _plugin: crate::models::PluginRegistration) -> Result<()> {
+        Ok(())
+    }
+    async fn get_registered_plugins(&self, _tenant_id: Option<String>) -> Result<Vec<crate::models::PluginRegistration>> {
+        Ok(Vec::new())
+    }
 }
 
 #[derive(Row, Serialize, Deserialize)]

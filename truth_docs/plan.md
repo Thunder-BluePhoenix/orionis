@@ -386,6 +386,32 @@ orion config                         # Show/edit configuration
 
 ---
 
+### Phase 6 — True Resiliency & Scale (Months 37–42)
+**Goal: Rebuild the core intelligence engine for high-cardinality, multi-release, hyper-scale environments.**
+
+| Feature | Description |
+|---|---|
+| **Semantic Abstraction Layer** | Map raw function names to standardized categories (e.g., `DB_READ`, `AUTH`) for cross-service clustering |
+| **Fuzzy Structural Similarity** | Replace exact hashes with Locality-Sensitive Hashing (LSH) and cosine distance for fuzzy matching |
+| **Statistical Risk Scoring**| Base alerts on frequency, latency variance, and structural distance, eliminating false positive floods |
+| **Dynamic Cluster Lifecycle** | Manage clusters through explicit stages (Candidate → Stable → Decaying) tracking stability |
+| **Aggressive Edge Sampling**| Discard 99.9% of stable traces; escalate to capturing 100% of anomalies, retaining only statistical summaries |
+| **Tiered Storage Model** | Store only representative traces per cluster and statistical metrics (P50/P99, error ratios) |
+| **Adaptive Similarity Thresholding** | Dynamic cluster-specific similarity bands to prevent fragmentation over slight code variations |
+| **Cluster Cardinality Governor** | Hard cap on cluster memory boundaries; entropy monitoring to fold cold clusters automatically |
+| **Concept Drift Window Modeling** | Sliding time windows for behavioral drift to auto-accept gradual evolutionary software changes |
+| **Deterministic Sampling Seeds** | Cluster-pinned seeds to ensure statistical integrity and zero blind spots during aggressive sampling |
+
+**v3.0 — The Statistical Execution Engine:**
+- ✅ Exact hashing replaced by Semantic Fuzzy Clustering + LSH Distance
+- ✅ Adaptive Thresholding & Cardinality Governor prevent storage meltdown
+- ✅ Concept Drift Windows eliminate alert fatigue over logical evolution
+- ✅ Tiered statistical metrics storage in ClickHouse
+- ✅ Aggressive Edge Sampling (99.9% drop) with Deterministic Seeds
+- ✅ Deterministic trace replay strictly maintained below the probabilistic layer
+
+---
+
 ## Complete Phase Summary
 
 | Phase | Months | Version | Key Unlock |
@@ -397,6 +423,7 @@ orion config                         # Show/edit configuration
 | Phase 4.5 — Reliability | 22–24 | v1.1 | Durable WAL, Idempotency, Backpressure |
 | Phase 5 — Core v2.0 | 25–30 | v2.0 | Deterministic Replay, State Heatmaps, Fingerprinting |
 | Phase 5.5 — Intel v2.5 | 31–36 | v2.5 | AI Patches, Regression Engine, Cloud, Plugins |
+| Phase 6 — Scale & Resiliency | 37–42 | v3.0 | Semantic Clustering, Adaptive Sampling, Tiered Storage |
 
 ---
 

@@ -31,6 +31,14 @@ pub trait StorageBackend: Send + Sync {
     // Security & Health
     async fn add_security_alert(&self, alert: crate::models::SecurityAlert, tenant_id: Option<String>) -> Result<()>;
     async fn get_security_alerts(&self, tenant_id: Option<String>) -> Result<Vec<crate::models::SecurityAlert>>;
+
+    // Phase 5.5: Simulation & SaaS
+    async fn save_simulation_rule(&self, rule: crate::models::SimulationRule) -> Result<()>;
+    async fn get_simulation_rules(&self, tenant_id: Option<String>) -> Result<Vec<crate::models::SimulationRule>>;
+    async fn increment_tenant_usage(&self, tenant_id: &str) -> Result<crate::models::TenantUsage>;
+    async fn get_tenant_usage(&self, tenant_id: &str) -> Result<crate::models::TenantUsage>;
+    async fn register_plugin(&self, plugin: crate::models::PluginRegistration) -> Result<()>;
+    async fn get_registered_plugins(&self, tenant_id: Option<String>) -> Result<Vec<crate::models::PluginRegistration>>;
 }
 
 pub type DbHandle = Arc<dyn StorageBackend>;
@@ -42,6 +50,9 @@ const EVENTS_TABLE: TableDefinition<(&[u8; 16], u64, &str), &str> = TableDefinit
 const NODES_TABLE: TableDefinition<&str, &str> = TableDefinition::new("nodes"); // node_id -> json
 const COMMENTS_TABLE: TableDefinition<&[u8; 16], &str> = TableDefinition::new("comments"); // comment_id -> json
 const SECURITY_ALERTS_TABLE: TableDefinition<&[u8; 16], &str> = TableDefinition::new("security_alerts"); // alert_id -> json
+const SIMULATION_RULES_TABLE: TableDefinition<&[u8; 16], &str> = TableDefinition::new("simulation_rules"); // rule_id -> json
+const TENANT_USAGE_TABLE: TableDefinition<&str, &str> = TableDefinition::new("tenant_usage"); // tenant_id -> json
+const PLUGINS_TABLE: TableDefinition<&[u8; 16], &str> = TableDefinition::new("plugins"); // plugin_id -> json
 
 pub struct LocalStore {
     db: Arc<Database>,
@@ -58,6 +69,10 @@ impl LocalStore {
             let _ = write_txn.open_table(EVENTS_TABLE)?;
             let _ = write_txn.open_table(NODES_TABLE)?;
             let _ = write_txn.open_table(COMMENTS_TABLE)?;
+            let _ = write_txn.open_table(SECURITY_ALERTS_TABLE)?;
+            let _ = write_txn.open_table(SIMULATION_RULES_TABLE)?;
+            let _ = write_txn.open_table(TENANT_USAGE_TABLE)?;
+            let _ = write_txn.open_table(PLUGINS_TABLE)?;
             let _ = write_txn.open_table(SECURITY_ALERTS_TABLE)?;
         }
         write_txn.commit()?;
@@ -670,6 +685,121 @@ impl StorageBackend for LocalStore {
         }
         alerts.sort_by_key(|a| std::cmp::Reverse(a.timestamp_ms));
         Ok(alerts)
+    }
+
+    // --- Phase 5.5: Simulation & SaaS ---
+    async fn save_simulation_rule(&self, rule: crate::models::SimulationRule) -> Result<()> {
+        let write_txn = self.db.begin_write()?;
+        {
+            let mut table = write_txn.open_table(SIMULATION_RULES_TABLE)?;
+            let json = serde_json::to_string(&rule)?;
+            table.insert(&rule.rule_id.into_bytes(), json.as_str())?;
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    async fn get_simulation_rules(&self, tenant_id: Option<String>) -> Result<Vec<crate::models::SimulationRule>> {
+        let read_txn = self.db.begin_read()?;
+        let table = match read_txn.open_table(SIMULATION_RULES_TABLE) {
+            Ok(t) => t,
+            Err(_) => return Ok(Vec::new()),
+        };
+        let mut rules = Vec::new();
+        for item in table.iter()? {
+            let (_, val_access) = item?;
+            let rule: crate::models::SimulationRule = serde_json::from_str(val_access.value())?;
+            if let Some(tid) = &tenant_id {
+                if rule.tenant_id.as_ref() != Some(tid) { continue; }
+            } else if rule.tenant_id.is_some() { continue; }
+            rules.push(rule);
+        }
+        Ok(rules)
+    }
+
+    async fn increment_tenant_usage(&self, tenant_id: &str) -> Result<crate::models::TenantUsage> {
+        let write_txn = self.db.begin_write()?;
+        let mut usage = {
+            let table = write_txn.open_table(TENANT_USAGE_TABLE)?;
+            match table.get(tenant_id)? {
+                Some(access) => serde_json::from_str::<crate::models::TenantUsage>(access.value())?,
+                None => crate::models::TenantUsage {
+                    tenant_id: tenant_id.to_string(),
+                    tier: crate::models::TenantTier::Free,
+                    traces_ingested_today: 0,
+                    last_reset_timestamp: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_millis() as u64,
+                }
+            }
+        };
+
+        // Reset check (e.g., 24 hours = 86400000 ms)
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_millis() as u64;
+        if now - usage.last_reset_timestamp > 86400000 {
+            usage.traces_ingested_today = 0;
+            usage.last_reset_timestamp = now;
+        }
+
+        usage.traces_ingested_today += 1;
+
+        {
+            let mut table = write_txn.open_table(TENANT_USAGE_TABLE)?;
+            let json = serde_json::to_string(&usage)?;
+            table.insert(tenant_id, json.as_str())?;
+        }
+        write_txn.commit()?;
+        Ok(usage)
+    }
+
+    async fn get_tenant_usage(&self, tenant_id: &str) -> Result<crate::models::TenantUsage> {
+        let read_txn = self.db.begin_read()?;
+        let table = match read_txn.open_table(TENANT_USAGE_TABLE) {
+            Ok(t) => t,
+            Err(_) => return Ok(crate::models::TenantUsage {
+                tenant_id: tenant_id.to_string(),
+                tier: crate::models::TenantTier::Free, // Default Tier
+                traces_ingested_today: 0,
+                last_reset_timestamp: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_millis() as u64,
+            }),
+        };
+        
+        match table.get(tenant_id)? {
+            Some(access) => Ok(serde_json::from_str(access.value())?),
+            None => Ok(crate::models::TenantUsage {
+                tenant_id: tenant_id.to_string(),
+                tier: crate::models::TenantTier::Free,
+                traces_ingested_today: 0,
+                last_reset_timestamp: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_millis() as u64,
+            })
+        }
+    }
+
+    async fn register_plugin(&self, plugin: crate::models::PluginRegistration) -> Result<()> {
+        let write_txn = self.db.begin_write()?;
+        {
+            let mut table = write_txn.open_table(PLUGINS_TABLE)?;
+            let json = serde_json::to_string(&plugin)?;
+            table.insert(&plugin.plugin_id.into_bytes(), json.as_str())?;
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    async fn get_registered_plugins(&self, tenant_id: Option<String>) -> Result<Vec<crate::models::PluginRegistration>> {
+        let read_txn = self.db.begin_read()?;
+        let table = match read_txn.open_table(PLUGINS_TABLE) {
+            Ok(t) => t,
+            Err(_) => return Ok(Vec::new()),
+        };
+        let mut plugins = Vec::new();
+        for item in table.iter()? {
+            let (_, val_access) = item?;
+            let plugin: crate::models::PluginRegistration = serde_json::from_str(val_access.value())?;
+            if let Some(tid) = &tenant_id {
+                if plugin.tenant_id.as_ref() != Some(tid) { continue; }
+            } else if plugin.tenant_id.is_some() { continue; }
+            plugins.push(plugin);
+        }
+        Ok(plugins)
     }
 }
 

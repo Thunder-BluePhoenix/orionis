@@ -37,7 +37,11 @@ pub fn build_router(state: AppState) -> Router {
         .route("/traces/{id}/comments",            get(list_comments).post(add_comment))
         .route("/intel/root-cause/{id}",           post(intel_root_cause))
         .route("/intel/regressions",               get(intel_regressions))
-        .route("/intel/performance/{id}",           get(intel_performance))
+        .route("/intel/performance/{id}",          get(intel_performance))
+        .route("/intel/memory-leaks/{id}",         get(intel_memory_leaks))
+        .route("/intel/sandbox-replay/{id}",       get(intel_sandbox_replay))
+        .route("/intel/simulate-failure",          post(intel_simulate_failure))
+        .route("/plugins/register",                post(register_plugin))
         .route("/ingest",                          post(ingest))
         .route("/graph",                           get(get_graph))
         .route("/replay/{id}",                     post(replay))
@@ -155,6 +159,24 @@ async fn ingest(State(s): State<AppState>, Extension(ident): Extension<Option<Id
     }
 
     let events_len = local_events.len() as u64;
+
+    // Phase 5.5: SaaS Tenant Tier Quotas
+    if let Some(tid) = &tenant_id {
+        match s.db.increment_tenant_usage(tid).await {
+            Ok(usage) => {
+                let limit = match usage.tier {
+                    crate::models::TenantTier::Free => 1000,
+                    crate::models::TenantTier::Pro => 1_000_000,
+                    crate::models::TenantTier::Enterprise => u64::MAX,
+                };
+                if usage.traces_ingested_today > limit {
+                    return (StatusCode::TOO_MANY_REQUESTS, "Tenant ingestion quota exceeded for today").into_response();
+                }
+            }
+            Err(e) => eprintln!("[SaaS] Failed to track usage for tenant {}: {}", tid, e),
+        }
+    }
+
     match s.db.ingest_events(local_events.clone(), tenant_id.clone()).await {
         Ok(_)  => {
             crate::metrics::INGESTION_TOTAL.inc_by(events_len as f64);
@@ -492,6 +514,50 @@ async fn intel_performance(Path(id): Path<Uuid>, State(s): State<AppState>, Exte
     let engine = crate::intel::IntelligenceEngine::new(s.db.clone());
     match engine.get_performance_tuning(id, tenant_id).await {
         Ok(v) => Json(v).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn intel_memory_leaks(Path(id): Path<Uuid>, State(s): State<AppState>, Extension(ident): Extension<Option<Identity>>) -> impl IntoResponse {
+    let tenant_id = ident.map(|i| i.tenant_id);
+    let engine = crate::intel::IntelligenceEngine::new(s.db.clone());
+    match engine.analyze_memory_leaks(id, tenant_id).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn intel_sandbox_replay(Path(id): Path<Uuid>, State(s): State<AppState>, Extension(ident): Extension<Option<Identity>>) -> impl IntoResponse {
+    let tenant_id = ident.map(|i| i.tenant_id);
+    let engine = crate::intel::IntelligenceEngine::new(s.db.clone());
+    match engine.generate_sandbox_replay(id, tenant_id).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn intel_simulate_failure(
+    State(s): State<AppState>,
+    Extension(ident): Extension<Option<Identity>>,
+    Json(payload): Json<crate::models::SimulationRule>,
+) -> impl IntoResponse {
+    let mut rule = payload;
+    rule.tenant_id = ident.map(|i| i.tenant_id);
+    match s.db.save_simulation_rule(rule.clone()).await {
+        Ok(_) => Json(serde_json::json!({ "status": "Simulation rule saved", "rule_id": rule.rule_id })).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn register_plugin(
+    State(s): State<AppState>,
+    Extension(ident): Extension<Option<Identity>>,
+    Json(payload): Json<crate::models::PluginRegistration>,
+) -> impl IntoResponse {
+    let mut plugin = payload;
+    plugin.tenant_id = ident.map(|i| i.tenant_id);
+    match s.db.register_plugin(plugin.clone()).await {
+        Ok(_) => Json(serde_json::json!({ "status": "Plugin registered", "plugin_id": plugin.plugin_id })).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
