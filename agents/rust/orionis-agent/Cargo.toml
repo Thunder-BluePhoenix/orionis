@@ -12,6 +12,7 @@ tonic = "0.12.3"
 prost = "0.13.5"
 tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
+memory-stats = "1.1"
 
 [build-dependencies]
 tonic-build = "0.12.3"

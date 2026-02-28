@@ -1,5 +1,4 @@
-use std::sync::Arc;
-use anyhow::{Result, Context};
+use anyhow::Result;
 use async_trait::async_trait;
 use uuid::Uuid;
 use clickhouse::{Client, Row};
@@ -36,7 +35,9 @@ impl ClickHouseStore {
                 ai_summary Nullable(String),
                 tenant_id Nullable(String),
                 tags Array(String),
-                assigned_to Nullable(String)
+                assigned_to Nullable(String),
+                structural_hash Nullable(String),
+                integrity_score Nullable(UInt8)
             ) ENGINE = ReplacingMergeTree()
             ORDER BY (trace_id)
         "#).execute().await?;
@@ -60,7 +61,11 @@ impl ClickHouseStore {
                 http_request String,
                 db_query String,
                 tenant_id Nullable(String),
-                event_id String
+                event_id String,
+                memory_usage_bytes Nullable(UInt64),
+                fingerprint Nullable(String),
+                is_folded UInt8,
+                fold_count UInt32
             ) ENGINE = ReplacingMergeTree()
             ORDER BY (trace_id, timestamp_ms, event_id)
         "#).execute().await?;
@@ -89,6 +94,19 @@ impl ClickHouseStore {
             ORDER BY (trace_id, timestamp_ms)
         "#).execute().await?;
 
+        client.query(r#"
+            CREATE TABLE IF NOT EXISTS security_alerts (
+                alert_id UUID,
+                trace_id UUID,
+                alert_type String,
+                severity String,
+                message String,
+                timestamp_ms UInt64,
+                tenant_id Nullable(String)
+            ) ENGINE = MergeTree()
+            ORDER BY (timestamp_ms)
+        "#).execute().await?;
+
         Ok(Self { client })
     }
 }
@@ -109,6 +127,8 @@ struct ChTraceSummary {
     tenant_id: Option<String>,
     tags: Vec<String>,
     assigned_to: Option<String>,
+    structural_hash: Option<String>,
+    integrity_score: Option<u8>,
 }
 
 #[derive(Row, Serialize, Deserialize)]
@@ -131,6 +151,10 @@ struct ChEvent {
     db_query: String,
     tenant_id: Option<String>,
     event_id: String,
+    memory_usage_bytes: Option<u64>,
+    fingerprint: Option<String>,
+    is_folded: u8,
+    fold_count: u32,
 }
 
 #[derive(Row, Serialize, Deserialize)]
@@ -153,17 +177,36 @@ struct ChComment {
     tenant_id: Option<String>,
 }
 
+#[derive(Row, Serialize, Deserialize)]
+struct ChFailureRisk {
+    structural_hash: String,
+    rate: f64,
+    count: u64,
+    failed: u64,
+}
+
+#[derive(Row, Serialize, Deserialize)]
+struct ChServiceEdge {
+    source: String,
+    target: String,
+    count: u64,
+    latency: f64,
+}
+
 #[async_trait]
 impl StorageBackend for ClickHouseStore {
     async fn ingest_events(&self, events: Vec<TraceEvent>, tenant_id: Option<String>) -> Result<()> {
         if events.is_empty() { return Ok(()); }
-        
+        let mut summaries = std::collections::HashMap::new();
+
+        let mut events = events;
+        TraceSummary::calculate_span_fingerprints(&mut events);
+        let events = TraceSummary::compress_timeline(events);
+
         let mut event_inserter = self.client.insert::<ChEvent>("events").await?;
         let mut trace_inserter = self.client.insert::<ChTraceSummary>("traces").await?;
         
-        let mut summaries = std::collections::HashMap::new();
-
-        for event in events {
+        for event in &events {
             // Upsert mechanism for trace summary
             let summary = summaries.entry(event.trace_id).or_insert_with(|| {
                 TraceSummary {
@@ -180,6 +223,12 @@ impl StorageBackend for ClickHouseStore {
                     tenant_id: tenant_id.clone(),
                     tags: Vec::new(),
                     assigned_to: None,
+                    structural_hash: None,
+                    integrity_score: None,
+                    version: event.version.clone(),
+                    environment: event.environment.clone(),
+                    ai_root_cause: None,
+                    ai_patch_suggestion: None,
                 }
             });
 
@@ -195,7 +244,8 @@ impl StorageBackend for ClickHouseStore {
                     summary.ai_cluster_key = Some(format!("{}:{}:{}", err, event.file, event.line));
                 }
             }
-            if event.timestamp_ms > (summary.started_at + summary.duration_ms.unwrap_or(0)) {
+            let duration_ms = summary.duration_ms.unwrap_or(0);
+            if event.timestamp_ms > (summary.started_at + duration_ms) {
                 summary.duration_ms = Some(event.timestamp_ms - summary.started_at);
             }
 
@@ -205,21 +255,31 @@ impl StorageBackend for ClickHouseStore {
                 parent_span_id: event.parent_span_id.map(|u| u.to_string()),
                 timestamp_ms: event.timestamp_ms,
                 event_type: serde_json::to_string(&event.event_type).unwrap_or_default(),
-                function_name: event.function_name,
-                module: event.module,
-                file: event.file,
+                function_name: event.function_name.clone(),
+                module: event.module.clone(),
+                file: event.file.clone(),
                 line: event.line,
                 locals: serde_json::to_string(&event.locals).unwrap_or_default(),
-                error_message: event.error_message,
+                error_message: event.error_message.clone(),
                 duration_us: event.duration_us,
                 language: serde_json::to_string(&event.language).unwrap_or_default(),
-                thread_id: event.thread_id,
+                thread_id: event.thread_id.clone(),
                 http_request: serde_json::to_string(&event.http_request).unwrap_or_default(),
                 db_query: serde_json::to_string(&event.db_query).unwrap_or_default(),
                 tenant_id: tenant_id.clone(),
-                event_id: event.event_id.unwrap_or_default(),
+                event_id: event.event_id.clone().unwrap_or_default(),
+                memory_usage_bytes: event.memory_usage_bytes,
+                fingerprint: event.fingerprint.clone(),
+                is_folded: if event.is_folded.unwrap_or(false) { 1 } else { 0 },
+                fold_count: event.fold_count.unwrap_or(1),
             };
             event_inserter.write(&ch_event).await?;
+        }
+        
+        for (trace_id, summary) in &mut summaries {
+            let trace_events: Vec<_> = events.iter().filter(|e| e.trace_id == *trace_id).cloned().collect();
+            summary.structural_hash = Some(TraceSummary::calculate_structural_hash(&trace_events));
+            summary.integrity_score = Some(TraceSummary::calculate_integrity_score(&trace_events));
         }
         
         for (_, summary) in summaries {
@@ -237,6 +297,8 @@ impl StorageBackend for ClickHouseStore {
                 tenant_id: tenant_id.clone(),
                 tags: summary.tags,
                 assigned_to: summary.assigned_to,
+                structural_hash: summary.structural_hash,
+                integrity_score: summary.integrity_score,
             };
             trace_inserter.write(&ch_trace).await?;
         }
@@ -269,6 +331,12 @@ impl StorageBackend for ClickHouseStore {
             tenant_id: r.tenant_id,
             tags: r.tags,
             assigned_to: r.assigned_to,
+            structural_hash: r.structural_hash,
+            integrity_score: r.integrity_score,
+            version: None,
+            environment: None,
+            ai_root_cause: None,
+            ai_patch_suggestion: None,
         }).collect();
         Ok(traces)
     }
@@ -304,6 +372,12 @@ impl StorageBackend for ClickHouseStore {
             db_query: serde_json::from_str(&r.db_query).unwrap_or(None),
             tenant_id: r.tenant_id,
             event_id: Some(r.event_id),
+            memory_usage_bytes: r.memory_usage_bytes,
+            fingerprint: r.fingerprint,
+            is_folded: Some(r.is_folded != 0),
+            fold_count: Some(r.fold_count),
+            version: None,
+            environment: None,
         }).collect();
         
         Ok(events)
@@ -321,13 +395,6 @@ impl StorageBackend for ClickHouseStore {
         Ok(())
     }
 
-    async fn get_service_graph(&self, tenant_id: Option<String>) -> Result<serde_json::Value> {
-        // Fallback implementation, can be done via complex SQL later
-        Ok(serde_json::json!({
-            "nodes": [],
-            "links": []
-        }))
-    }
 
     async fn get_event_by_span_id(&self, span_id: Uuid, tenant_id: Option<String>) -> Result<Option<TraceEvent>> {
         let sid_str = span_id.to_string();
@@ -361,17 +428,26 @@ impl StorageBackend for ClickHouseStore {
                 db_query: serde_json::from_str(&r.db_query).unwrap_or(None),
                 tenant_id: r.tenant_id,
                 event_id: Some(r.event_id),
+                memory_usage_bytes: r.memory_usage_bytes,
+                fingerprint: r.fingerprint,
+                is_folded: Some(r.is_folded != 0),
+                fold_count: Some(r.fold_count),
+                version: None,
+                environment: None,
             }))
         } else {
             Ok(None)
         }
     }
 
-    async fn get_clusters(&self, tenant_id: Option<String>) -> Result<serde_json::Value> {
-        Ok(serde_json::json!([])) // simplified
-    }
-
     async fn update_trace_ai(&self, trace_id: Uuid, summary: String, cluster_key: Option<String>) -> Result<()> {
+        let tid_str = trace_id.to_string();
+        let query = format!("ALTER TABLE traces UPDATE ai_summary = ?, ai_cluster_key = ? WHERE trace_id = ?");
+        self.client.query(&query)
+            .bind(summary)
+            .bind(cluster_key)
+            .bind(tid_str)
+            .execute().await?;
         Ok(())
     }
 
@@ -480,4 +556,147 @@ impl StorageBackend for ClickHouseStore {
 
         Ok(())
     }
+
+    async fn get_failure_risks(&self, tenant_id: Option<String>) -> Result<serde_json::Value> {
+        let query = if let Some(tid) = &tenant_id {
+            format!("SELECT structural_hash, avg(has_error) as rate, count(*) as count, sum(has_error) as failed FROM traces WHERE tenant_id = '{}' GROUP BY structural_hash", tid)
+        } else {
+            "SELECT structural_hash, avg(has_error) as rate, count(*) as count, sum(has_error) as failed FROM traces GROUP BY structural_hash".to_string()
+        };
+
+        let mut cursor = self.client.query(&query).fetch::<ChFailureRisk>()?;
+        let mut results = Vec::new();
+        while let Some(row) = cursor.next().await? {
+            results.push(serde_json::json!({
+                "structural_hash": row.structural_hash,
+                "failure_rate": row.rate,
+                "total_runs": row.count,
+                "failed_runs": row.failed
+            }));
+        }
+        Ok(serde_json::json!(results))
+    }
+
+    async fn get_service_graph(&self, tenant_id: Option<String>) -> Result<serde_json::Value> {
+        let cond = if let Some(ten) = tenant_id {
+            format!("WHERE tenant_id = '{}'", ten)
+        } else {
+            "WHERE tenant_id IS NULL".to_string()
+        };
+
+        let query = format!(r#"
+            SELECT 
+                parent.module as source,
+                child.module as target,
+                count(*) as count,
+                avg(child.duration_us) / 1000 as latency
+            FROM events as child
+            JOIN events as parent ON child.parent_span_id = parent.span_id
+            {} AND child.parent_span_id IS NOT NULL AND child.module != parent.module
+            GROUP BY source, target
+        "#, cond);
+
+        let mut cursor = self.client.query(&query).fetch::<ChServiceEdge>()?;
+        let mut links = Vec::new();
+        let mut nodes = std::collections::HashSet::new();
+
+        while let Some(row) = cursor.next().await? {
+            nodes.insert(row.source.clone());
+            nodes.insert(row.target.clone());
+            links.push(serde_json::json!({
+                "source": row.source,
+                "target": row.target,
+                "count": row.count,
+                "latency": row.latency
+            }));
+        }
+
+        let nodes_out: Vec<_> = nodes.into_iter().map(|n| serde_json::json!({ "id": n, "label": n, "type": "service" })).collect();
+        Ok(serde_json::json!({ "nodes": nodes_out, "links": links }))
+    }
+
+    async fn get_clusters(&self, tenant_id: Option<String>) -> Result<serde_json::Value> {
+        // Simple cluster retrieval based on structural_hash + error key
+        let query = if let Some(tid) = &tenant_id {
+            format!("SELECT ifNull(ai_cluster_key, structural_hash) as cluster_id, any(trace_id) as rep_id, count(*) as count FROM traces WHERE tenant_id = '{}' GROUP BY cluster_id HAVING cluster_id IS NOT NULL", tid)
+        } else {
+            "SELECT ifNull(ai_cluster_key, structural_hash) as cluster_id, any(trace_id) as rep_id, count(*) as count FROM traces GROUP BY cluster_id HAVING cluster_id IS NOT NULL".to_string()
+        };
+
+        #[derive(Row, Serialize, Deserialize)]
+        struct ChClusterRow { cluster_id: String, rep_id: String, count: u64 }
+
+        let mut cursor = self.client.query(&query).fetch::<ChClusterRow>()?;
+        let mut results = Vec::new();
+        while let Some(row) = cursor.next().await? {
+            results.push(serde_json::json!({
+                "cluster_key": row.cluster_id,
+                "count": row.count,
+                "representative_id": row.rep_id
+            }));
+        }
+        Ok(serde_json::json!(results))
+    }
+
+    async fn add_security_alert(&self, alert: crate::models::SecurityAlert, tenant_id: Option<String>) -> Result<()> {
+        let mut alert = alert;
+        alert.tenant_id = tenant_id;
+        let mut inserter = self.client.insert::<ChSecurityAlert>("security_alerts").await?;
+        let ch_alert = ChSecurityAlert {
+            alert_id: alert.alert_id.to_string(),
+            trace_id: alert.trace_id.to_string(),
+            alert_type: alert.alert_type,
+            severity: alert.severity,
+            message: alert.message,
+            timestamp_ms: alert.timestamp_ms,
+            tenant_id: alert.tenant_id,
+        };
+        inserter.write(&ch_alert).await?;
+        inserter.end().await?;
+        Ok(())
+    }
+
+    async fn get_security_alerts(&self, tenant_id: Option<String>) -> Result<Vec<crate::models::SecurityAlert>> {
+        let query = if let Some(tid) = &tenant_id {
+            format!("SELECT * FROM security_alerts WHERE tenant_id = '{}' ORDER BY timestamp_ms DESC", tid)
+        } else {
+            "SELECT * FROM security_alerts WHERE tenant_id IS NULL ORDER BY timestamp_ms DESC".to_string()
+        };
+
+        let mut cursor = self.client.query(&query).fetch::<ChSecurityAlert>()?;
+        let mut alerts = Vec::new();
+        while let Some(row) = cursor.next().await? {
+            alerts.push(crate::models::SecurityAlert {
+                alert_id: Uuid::parse_str(&row.alert_id).unwrap_or_default(),
+                trace_id: Uuid::parse_str(&row.trace_id).unwrap_or_default(),
+                alert_type: row.alert_type,
+                severity: row.severity,
+                message: row.message,
+                timestamp_ms: row.timestamp_ms,
+                tenant_id: row.tenant_id,
+            });
+        }
+        Ok(alerts)
+    }
+
+    async fn update_trace_intel(&self, _trace_id: Uuid, _root_cause: Option<String>, _patch: Option<String>) -> Result<()> {
+        // Not fully implemented for ClickHouse backend yet
+        Ok(())
+    }
+
+    async fn get_regressions(&self, _tenant_id: Option<String>) -> Result<serde_json::Value> {
+        // Not fully implemented for ClickHouse backend yet
+        Ok(serde_json::json!([]))
+    }
+}
+
+#[derive(Row, Serialize, Deserialize)]
+struct ChSecurityAlert {
+    alert_id: String,
+    trace_id: String,
+    alert_type: String,
+    severity: String,
+    message: String,
+    timestamp_ms: u64,
+    tenant_id: Option<String>,
 }

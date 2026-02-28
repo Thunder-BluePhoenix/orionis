@@ -20,7 +20,9 @@ pub struct WalManager {
 impl WalManager {
     pub fn new(data_dir: &str) -> Result<Self> {
         let path = Path::new(data_dir).join("ingestion.wal");
-        std::fs::create_dir_all(data_dir).context("Failed to create WAL directory")?;
+        if !Path::new(data_dir).exists() {
+            std::fs::create_dir_all(data_dir).context("Failed to create WAL directory")?;
+        }
         
         let file = OpenOptions::new()
             .create(true)
@@ -73,7 +75,7 @@ impl WalManager {
 
     /// Truncate/Clear the WAL once data is safely persisted in the primary DB
     pub fn checkpoint(&self) -> Result<()> {
-        let mut file = self.file.lock().map_err(|_| anyhow::anyhow!("WAL lock poisoned"))?;
+        let file = self.file.lock().map_err(|_| anyhow::anyhow!("WAL lock poisoned"))?;
         file.set_len(0)?;
         file.sync_all()?;
         Ok(())

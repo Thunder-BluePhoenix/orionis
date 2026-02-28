@@ -266,6 +266,33 @@
       color: var(--muted);
     }
 
+    /* Trust Score Bar */
+    .trust-container {
+      width: 100%;
+      height: 3px;
+      background: var(--border);
+      border-radius: 2px;
+      margin-top: 6px;
+      overflow: hidden;
+    }
+
+    .trust-bar {
+      height: 100%;
+      transition: width 0.3s;
+    }
+
+    .trust-bar.high {
+      background: var(--ok);
+    }
+
+    .trust-bar.med {
+      background: var(--accent);
+    }
+
+    .trust-bar.low {
+      background: var(--error);
+    }
+
     /* ── Timeline / Center ──────────────────────────────────────────────── */
     .empty-state {
       display: flex;
@@ -525,6 +552,44 @@
       color: var(--text);
     }
 
+    .ai-patch {
+      margin-top: 12px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 10px;
+    }
+
+    .ai-patch-header {
+      font-size: 10px;
+      color: var(--ok);
+      margin-bottom: 6px;
+      font-weight: 600;
+    }
+
+    .ai-patch-code {
+      font-family: 'JetBrains Mono', 'Fira Code', monospace;
+      font-size: 11px;
+      color: #7ee787;
+      white-space: pre-wrap;
+    }
+
+    .intel-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px;
+      margin-bottom: 16px;
+    }
+
+    .intel-v-tag {
+      font-size: 9px;
+      background: var(--accent);
+      color: white;
+      padding: 1px 4px;
+      border-radius: 3px;
+    }
+
     /* ── Collaboration Panel ────────────────────────────────────────────── */
     .comment-row {
       padding: 10px 14px;
@@ -583,6 +648,13 @@
         <div class="switch-thumb"></div>
       </div>
     </label>
+    <label class="ai-switch" title="Highlight high-mutation areas">
+      <span>Heatmap Mode</span>
+      <input type="checkbox" id="heatmap-toggle" onchange="toggleHeatmap(this.checked)">
+      <div class="switch-track" style="background: linear-gradient(to right, var(--accent), var(--error))">
+        <div class="switch-thumb"></div>
+      </div>
+    </label>
   </header>
 
   <!-- ── Main Layout ─────────────────────────────────────────────────────── -->
@@ -617,6 +689,9 @@
           <span style="cursor:pointer" id="tab-graph" onclick="switchTab('graph')">Service Graph</span>
           <span style="cursor:pointer" id="tab-clusters" onclick="switchTab('clusters')">Failure Clusters</span>
           <span style="cursor:pointer" id="tab-nodes" onclick="switchTab('nodes')">Cluster Nodes</span>
+          <span style="cursor:pointer" id="tab-security" onclick="switchTab('security')">Security</span>
+          <span style="cursor:pointer" id="tab-intelligence" onclick="switchTab('intelligence')">Intelligence</span>
+          <span style="cursor:pointer" id="tab-health" onclick="switchTab('health')">Health</span>
         </div>
       </div>
       <div class="timeline-bar" id="timeline-bar" style="display:none">
@@ -650,6 +725,15 @@
 
       <div class="panel-body" id="nodes-panel" style="display:none;padding:16px">
         <div id="nodes-container"></div>
+      </div>
+      <div class="panel-body" id="security-panel" style="display:none;padding:16px">
+        <div id="security-container"></div>
+      </div>
+      <div class="panel-body" id="intelligence-panel" style="display:none;padding:16px">
+        <div id="intelligence-container"></div>
+      </div>
+      <div class="panel-body" id="health-panel" style="display:none;padding:16px">
+        <div id="health-container"></div>
       </div>
       <div class="controls" id="replay-controls" style="display:none">
         <button onclick="stepBack()">◀ Back</button>
@@ -710,6 +794,8 @@
     let playing = false;
     let playTimer = null;
     let activeId = null;
+    let alerts = [];
+    let nodeHealth = [];
     let currentTab = 'timeline';
     let diffMode = false;
     let diffEvents = [];
@@ -717,6 +803,8 @@
     let diffActiveId = null;
     let divergenceIndex = -1;
     let aiEnabled = localStorage.getItem('aiEnabled') === 'true';
+    let heatmapEnabled = false;
+    let heatmapData = null;
 
     // Initialize UI
     window.addEventListener('DOMContentLoaded', () => {
@@ -739,14 +827,74 @@
         return;
       }
       panel.classList.add('active');
-      summaryEl.textContent = 'Thinking...';
+      summaryEl.innerHTML = '<div style="color:var(--accent2)">Generating root cause analysis...</div>';
       try {
-        const res = await fetch(`/api/ai/summarize/${id}`);
+        const res = await fetch(`/api/intel/root-cause/${id}`, { method: 'POST' });
         const data = await res.json();
-        summaryEl.innerHTML = `<p>${data.summary}</p><p style="margin-top:8px;font-size:11px;color:var(--muted)"><b>Rec:</b> ${data.recommendation}</p>`;
+
+        let html = `<p>${data.root_cause}</p>`;
+        if (data.suggested_patch) {
+          html += `
+            <div class="ai-patch">
+              <div class="ai-patch-header">SUGGESTED PATCH</div>
+              <div class="ai-patch-code">${escHtml(data.suggested_patch)}</div>
+            </div>`;
+        }
+        summaryEl.innerHTML = html;
       } catch (e) {
-        summaryEl.textContent = 'AI analysis failed.';
+        summaryEl.textContent = 'Intelligence analysis failed.';
       }
+    }
+
+    async function loadIntelligence() {
+      const el = document.getElementById('intelligence-container');
+      el.innerHTML = '<div style="padding:20px;color:var(--muted)">Analyzing cross-release regressions...</div>';
+      try {
+        const res = await fetch('/api/intel/regressions');
+        const regressions = await res.json();
+
+        if (!regressions.length) {
+          el.innerHTML = `
+            <div class="intel-card">
+              <h3>✅ No Regressions Detected</h3>
+              <p style="font-size:12px;color:var(--muted);margin-top:8px">Execution paths are stable across tracked versions.</p>
+            </div>`;
+        } else {
+          el.innerHTML = `<h3>🚀 Regression Analysis</h3>` + regressions.map(r => `
+            <div class="intel-card">
+              <div style="display:flex;justify-content:space-between">
+                <span class="intel-v-tag">${r.from_version} → ${r.to_version}</span>
+                <span class="badge error">${r.new_execution_paths} NEW PATHS</span>
+              </div>
+              <div style="margin-top:12px">
+                <p style="font-size:12px">Detected <b>${r.new_execution_paths}</b> unknown structural patterns in ${r.to_version}. This may indicate a control-flow regression or unexpected edge case.</p>
+                <div style="margin-top:8px; display:flex; gap:4px; overflow-x:auto">
+                   ${r.hashes.map(h => `<span class="badge" style="background:var(--border);color:var(--muted);font-family:monospace">${h.slice(0, 12)}</span>`).join('')}
+                </div>
+              </div>
+            </div>
+          `).join('');
+        }
+
+        // Add performance section
+        if (activeId) {
+          const perfRes = await fetch(`/api/intel/performance/${activeId}`);
+          const perf = await perfRes.json();
+          el.innerHTML += `
+            <div class="intel-card" style="border-left:4px solid #ffab00">
+              <h3 style="color:#ffab00">⚡ Performance Tuning</h3>
+              <p style="font-size:12px;margin-top:8px">${perf.overall_recommendation}</p>
+              ${perf.bottlenecks.map(b => `
+                <div style="margin-top:10px; padding:8px; background:rgba(0,0,0,0.2); border-radius:4px">
+                  <div style="font-weight:600;font-size:11px">${b.function}</div>
+                  <div style="font-size:13px; color:var(--error)">${b.duration_ms}ms latency</div>
+                  <div style="font-size:11px; color:var(--muted); margin-top:4px">${b.suggestion}</div>
+                </div>
+              `).join('')}
+            </div>`;
+        }
+
+      } catch (e) { el.innerHTML = 'Intelligence view failed to load.'; }
     }
 
     // ── WebSocket ─────────────────────────────────────────────────────────────────
@@ -773,11 +921,27 @@
       step = 0;
       loadAISummary(id);
       loadComments(id);
+      loadHeatmap(id);
       if (diffMode) renderDiff(); // Just update primary side
       else {
         renderTimeline();
         renderStack();
       }
+    }
+
+    async function loadHeatmap(id) {
+      if (!heatmapEnabled) { heatmapData = null; return; }
+      try {
+        const res = await fetch(`/api/traces/${id}/heatmap`);
+        heatmapData = await res.json();
+        if (heatmapEnabled) renderStack();
+      } catch (e) { console.error("Heatmap failed", e); }
+    }
+
+    function toggleHeatmap(enabled) {
+      heatmapEnabled = enabled;
+      if (enabled && activeId) loadHeatmap(activeId);
+      else renderStack();
     }
 
     async function loadComments(id) {
@@ -903,15 +1067,23 @@
       el.innerHTML = visible.map(t => `
     <div class="trace-item ${t.trace_id === activeId ? 'active' : ''}" onclick="loadTrace('${t.trace_id}')">
       <div style="display:flex; justify-content:space-between">
-        <div class="fn-name">${t.name}</div>
+        <div class="fn-name">
+          ${alerts.some(a => a.trace_id === t.trace_id) ? '⚠️ ' : ''}${t.name}
+        </div>
         <button class="badge" style="background:var(--border);color:var(--muted);padding:0 4px" onclick="event.stopPropagation(); loadDiff('${t.trace_id}')">Diff</button>
       </div>
       <div class="meta">
         <span class="badge ${t.has_error ? 'error' : 'ok'}">${t.has_error ? '✕ Error' : '✓ OK'}</span>
         <span class="lang-badge">${t.language}</span>
+        ${t.version ? `<span class="intel-v-tag">${t.version}</span>` : ''}
         <span>${t.event_count} events</span>
         <span>${t.duration_ms != null ? t.duration_ms + ' ms' : '—'}</span>
+        ${t.integrity_score != null ? `<span style="margin-left:auto;color:${integrityColor(t.integrity_score)}">${t.integrity_score}% trust</span>` : ''}
       </div>
+      ${t.integrity_score != null ? `
+      <div class="trust-container">
+        <div class="trust-bar ${integrityClass(t.integrity_score)}" style="width: ${t.integrity_score}%"></div>
+      </div>` : ''}
     </div>`).join('');
     }
 
@@ -939,11 +1111,28 @@
       panel.innerHTML = `<div class="stack-tree">` +
         visible.map((e, i) => {
           const isDiverged = diffMode && divergenceIndex !== -1 && i >= divergenceIndex;
+
+          let heatmapStyle = "";
+          let mutationTag = "";
+          if (heatmapEnabled && heatmapData && heatmapData.metrics[e.span_id]) {
+            const m = heatmapData.metrics[e.span_id];
+            const intensity = Math.min(1, m.mutation_count / 10); // scale 0-10 mutations
+            const color = d3.interpolateRgb("rgba(108,138,255,0.1)", "rgba(255,95,95,0.4)")(intensity);
+            heatmapStyle = `background: ${color}; border-left: 3px solid ${intensity > 0.5 ? 'var(--error)' : 'var(--accent)'}`;
+            if (m.mutation_count > 0) mutationTag = `<span class="badge" style="background:var(--error);color:white;margin-left:4px">${m.mutation_count} Δ</span>`;
+            if (m.memory_delta_bytes != 0) {
+              const mb = (m.memory_delta_bytes / 1024).toFixed(1);
+              mutationTag += `<span class="badge" style="background:var(--border);color:var(--text);margin-left:4px">${mb > 0 ? '+' : ''}${mb}KB</span>`;
+            }
+          }
+
           return `
       <div class="span-node ${i === step ? 'active-span' : ''} ${isDiverged ? 'diverged' : ''}" onclick="goTo(${i})">
-        <div class="span-header">
+        <div class="span-header" style="${heatmapStyle}">
           <span class="span-type ${typeClass(e.event_type)}">${shortType(e.event_type)}</span>
           <span class="span-fn">${e.function_name}</span>
+          ${mutationTag}
+          ${e.is_folded ? `<span class="badge" style="background:var(--accent2);color:white;padding:0 4px;margin-left:4px">${e.fold_count}x loop</span>` : ''}
           ${e.thread_id ? `<span class="span-thread">T:${e.thread_id}</span>` : ''}
           ${e.http_request ? `<button class="badge" style="background:var(--accent);color:white;padding:0 4px" onclick="event.stopPropagation(); replayRequest('${e.span_id}')">Replay</button>` : ''}
           <span style="font-size:10px;color:var(--muted)">${e.file}:${e.line}</span>
@@ -965,11 +1154,24 @@
         el.innerHTML = `<div class="local-row" style="color:var(--muted);font-size:12px">No variables captured for this frame</div>`;
         return;
       }
-      el.innerHTML = event.locals.map(l => `
-    <div class="local-row">
-      <div><span class="local-name">${l.name}</span><span class="local-type">${l.type_name}</span></div>
-      <div class="local-value">${escHtml(l.value)}</div>
-    </div>`).join('');
+
+      let changedKeys = [];
+      if (heatmapEnabled && heatmapData && heatmapData.metrics[event.span_id]) {
+        changedKeys = heatmapData.metrics[event.span_id].changed_keys;
+      }
+
+      el.innerHTML = event.locals.map(l => {
+        const isChanged = changedKeys.includes(l.name);
+        return `
+        <div class="local-row" style="${isChanged ? 'background:rgba(255,95,95,0.05);border-left:2px solid var(--error)' : ''}">
+          <div>
+            <span class="local-name">${l.name}</span>
+            <span class="local-type">${l.type_name}</span>
+            ${isChanged ? `<span class="badge" style="background:var(--error);color:white;font-size:8px;margin-left:4px">MUTATED</span>` : ''}
+          </div>
+          <div class="local-value">${escHtml(l.value)}</div>
+        </div>`;
+      }).join('');
     }
 
     // ── Playback ──────────────────────────────────────────────────────────────────
@@ -1019,6 +1221,9 @@
       document.getElementById('tab-graph').className = tab === 'graph' ? 'active-tab' : '';
       document.getElementById('tab-clusters').className = tab === 'clusters' ? 'active-tab' : '';
       document.getElementById('tab-nodes').className = tab === 'nodes' ? 'active-tab' : '';
+      document.getElementById('tab-security').className = tab === 'security' ? 'active-tab' : '';
+      document.getElementById('tab-intelligence').className = tab === 'intelligence' ? 'active-tab' : '';
+      document.getElementById('tab-health').className = tab === 'health' ? 'active-tab' : '';
 
       document.getElementById('stack-panel').style.display = tab === 'timeline' ? '' : 'none';
       document.getElementById('timeline-bar').style.display = (tab === 'timeline' || tab === 'flame') && events.length ? '' : 'none';
@@ -1028,11 +1233,17 @@
       document.getElementById('flame-panel').style.display = tab === 'flame' ? '' : 'none';
       document.getElementById('clusters-panel').style.display = tab === 'clusters' ? '' : 'none';
       document.getElementById('nodes-panel').style.display = tab === 'nodes' ? '' : 'none';
+      document.getElementById('security-panel').style.display = tab === 'security' ? '' : 'none';
+      document.getElementById('intelligence-panel').style.display = tab === 'intelligence' ? '' : 'none';
+      document.getElementById('health-panel').style.display = tab === 'health' ? '' : 'none';
 
       if (tab === 'graph') loadGraph();
       if (tab === 'flame') renderFlamegraph();
       if (tab === 'clusters') loadClusters();
       if (tab === 'nodes') loadNodes();
+      if (tab === 'security') loadSecurityAlerts();
+      if (tab === 'intelligence') loadIntelligence();
+      if (tab === 'health') loadNodeHealth();
     }
 
     async function loadNodes() {
@@ -1065,6 +1276,67 @@
             </div>`;
       }).join('')}
         </div>`;
+    }
+
+    async function loadSecurityAlerts() {
+      try {
+        const res = await fetch('/api/security/alerts');
+        alerts = await res.json();
+        renderTraceList();
+        if (currentTab === 'security') renderSecurity();
+      } catch (e) { console.error("Alerts failed", e); }
+    }
+
+    async function loadNodeHealth() {
+      try {
+        const res = await fetch('/api/nodes/health');
+        nodeHealth = await res.json();
+        if (currentTab === 'health') renderHealth();
+      } catch (e) { console.error("Health failed", e); }
+    }
+
+    function renderSecurity() {
+      const el = document.getElementById('security-container');
+      if (!alerts.length) { el.innerHTML = `<div class="empty-state">No security alerts detected</div>`; return; }
+
+      el.innerHTML = `<h3>⚠️ Security Anomalies</h3>` + alerts.map(a => `
+        <div class="span-node" style="border-left:4px solid ${a.severity === 'high' ? 'var(--error)' : 'var(--accent)'}; margin-bottom:8px">
+          <div class="span-header" onclick="loadTrace('${a.trace_id}')">
+            <span class="badge" style="background:${a.severity === 'high' ? 'var(--error)' : 'var(--accent)'};color:white">${a.alert_type.toUpperCase()}</span>
+            <span class="span-fn" style="font-size:13px">${a.message}</span>
+            <div style="font-size:10px;color:var(--muted);margin-top:4px">Trace ID: ${a.trace_id} | ${new Date(a.timestamp_ms).toLocaleTimeString()}</div>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    function renderHealth() {
+      const el = document.getElementById('health-container');
+      if (!nodeHealth.length) { el.innerHTML = `<div class="empty-state">No active agents reporting health</div>`; return; }
+
+      el.innerHTML = `<h3>📡 Agent Self-Health</h3>` + nodeHealth.map(n => {
+        const usage = n.buffer_usage_percent;
+        const color = usage > 80 ? 'var(--error)' : (usage > 50 ? '#ffab00' : 'var(--success)');
+        return `
+        <div style="background:var(--surface);border:1px solid var(--border);padding:12px;border-radius:8px;margin-bottom:12px">
+          <div style="display:flex;justify-content:space-between;margin-bottom:8px">
+            <span style="font-weight:bold">${n.hostname} <span style="font-size:10px;font-weight:normal;color:var(--muted)">(${n.language}, PID:${n.pid})</span></span>
+            <span class="badge" style="background:var(--border)">Active</span>
+          </div>
+          <div style="margin-bottom:4px;font-size:11px;display:flex;justify-content:space-between">
+            <span>Buffer Pressure</span>
+            <span>${usage}%</span>
+          </div>
+          <div style="height:6px;background:rgba(255,255,255,0.1);border-radius:3px;overflow:hidden">
+            <div style="height:100%;width:${usage}%;background:${color};transition:width 0.5s"></div>
+          </div>
+          <div style="display:flex;gap:16px;margin-top:12px;font-size:11px;color:var(--muted)">
+            <span>Dropped Events: <span style="color:var(--text)">${n.events_dropped}</span></span>
+            <span>Active Spans: <span style="color:var(--text)">${n.active_spans}</span></span>
+            <span>Last Heartbeat: <span style="color:var(--text)">${new Date(n.last_heartbeat * 1000).toLocaleTimeString()}</span></span>
+          </div>
+        </div>
+      `}).join('');
     }
 
     async function loadClusters() {
@@ -1329,6 +1601,18 @@
 
     function escHtml(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
 
+    function integrityColor(score) {
+      if (score >= 90) return 'var(--ok)';
+      if (score >= 60) return 'var(--accent)';
+      return 'var(--error)';
+    }
+
+    function integrityClass(score) {
+      if (score >= 90) return 'high';
+      if (score >= 60) return 'med';
+      return 'low';
+    }
+
     // ── URL Param Handling ────────────────────────────────────────────────────────
     // Supports: ?trace=<id>  and  ?diff=<id-a>,<id-b>
 
@@ -1368,6 +1652,10 @@
 
     // ── Boot ──────────────────────────────────────────────────────────────────────
     connectWs();
+    loadSecurityAlerts();
+    loadNodeHealth();
+    setInterval(loadNodeHealth, 5000);
+    setInterval(loadSecurityAlerts, 10000);
     setTimeout(handleUrlParams, 600);  // run after initial WebSocket load completes
   </script>
 </body>

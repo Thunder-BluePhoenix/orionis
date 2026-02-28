@@ -1,0 +1,34 @@
+🚀 Starting Phase 5.5 Intelligence Verification...
+📦 Building baseline for v1.0.0...
+📦 Ingesting v1.1.0 with a new execution path...
+   Sent deviant trace in v1.1.0: 1ed41093-7860-4e95-a8eb-e6df474baaa0 (Status: 422)
+🔍 Verifying Regression Detection API...
+   Detected regressions: 0
+🔥 Triggering failure for AI Analysis...
+   Sent failing trace: e21c8a10-bb19-4d81-a628-cf81b7f4f9a3
+🧠 Verifying AI Root Cause API...
+Traceback (most recent call last):
+  File "C:\Users\rahul\AppData\Local\Programs\Python\Python311\Lib\site-packages\requests\models.py", line 976, in json
+    return complexjson.loads(self.text, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\rahul\AppData\Local\Programs\Python\Python311\Lib\json\__init__.py", line 346, in loads
+    return _default_decoder.decode(s)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\rahul\AppData\Local\Programs\Python\Python311\Lib\json\decoder.py", line 337, in decode
+    obj, end = self.raw_decode(s, idx=_w(s, 0).end())
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\rahul\AppData\Local\Programs\Python\Python311\Lib\json\decoder.py", line 355, in raw_decode
+    raise JSONDecodeError("Expecting value", s, err.value) from None
+json.decoder.JSONDecodeError: Expecting value: line 1 column 1 (char 0)
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "f:\proj_guides\Orionis\verify_script\verify_phase5_5.py", line 103, in <module>
+    test_intel_features()
+  File "f:\proj_guides\Orionis\verify_script\verify_phase5_5.py", line 89, in test_intel_features
+    analysis = r.json()
+               ^^^^^^^^
+  File "C:\Users\rahul\AppData\Local\Programs\Python\Python311\Lib\site-packages\requests\models.py", line 980, in json
+    raise RequestsJSONDecodeError(e.msg, e.doc, e.pos)
+requests.exceptions.JSONDecodeError: Expecting value: line 1 column 1 (char 0)

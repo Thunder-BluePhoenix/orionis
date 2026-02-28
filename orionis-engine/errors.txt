@@ -1,0 +1,26 @@
+    Checking orionis-engine v0.1.0 (F:\proj_guides\Orionis\orionis-engine)
+error[E0063]: missing fields `fingerprint` and `memory_usage_bytes` in initializer of `models::TraceEvent`
+   --> src\server.rs:311:38
+    |
+311 | ...                   let ev = crate::models::TraceEvent {
+    |                                ^^^^^^^^^^^^^^^^^^^^^^^^^ missing `fingerprint` and `memory_usage_bytes`
+
+error[E0063]: missing field `tenant_id` in initializer of `models::TraceEvent`
+   --> src\store_clickhouse.rs:412:21
+    |
+412 |             Ok(Some(TraceEvent {
+    |                     ^^^^^^^^^^ missing `tenant_id`
+
+warning: variable does not need to be mutable
+  --> src\wal.rs:78:13
+   |
+78 |         let mut file = self.file.lock().map_err(|_| anyhow::anyhow!("WAL lock poisoned"))?;
+   |             ----^^^^
+   |             |
+   |             help: remove this `mut`
+   |
+   = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+For more information about this error, try `rustc --explain E0063`.
+warning: `orionis-engine` (bin "orionis-engine") generated 1 warning
+error: could not compile `orionis-engine` (bin "orionis-engine") due to 2 previous errors; 1 warning emitted

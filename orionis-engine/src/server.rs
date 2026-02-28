@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use crate::{
     models::{IngestPayload, TraceComment},
-    store::{self, DbHandle},
+    store::DbHandle,
     ws::WsBroadcaster,
     auth::{Identity},
 };
@@ -27,27 +27,34 @@ pub struct AppState {
 
 pub fn build_router(state: AppState) -> Router {
     let api_router = Router::new()
-        .route("/traces",       get(list_traces))
-        .route("/api/traces/:id", get(get_trace))
-        .route("/api/traces/:id/tags", post(update_tags))
-        .route("/api/traces/:id/assign", post(update_assignment))
-        .route("/api/traces/:id/ai-summary", post(ai_summarize))
-        .route("/ingest",       post(ingest))
-        .route("/graph",        get(get_graph))
-        .route("/replay/{id}",  post(replay))
-        .route("/clusters",     get(get_clusters))
-        .route("/nodes",        get(list_nodes))
-        .route("/clear",        delete(clear_all))
-        .route("/traces/{id}/comments", get(list_comments))
-        .route("/traces/{id}/comments", post(add_comment))
+        .route("/traces",                          get(list_traces))
+        .route("/traces/{id}",                     get(get_trace))
+        .route("/traces/{id}/heatmap",             get(get_heatmap))
+        .route("/traces/{id}/replay-snapshot",     get(get_replay_snapshot))
+        .route("/traces/{id}/tags",                post(update_tags))
+        .route("/traces/{id}/assign",              post(update_assignment))
+        .route("/traces/{id}/ai-summary",          post(ai_summarize))
+        .route("/traces/{id}/comments",            get(list_comments).post(add_comment))
+        .route("/intel/root-cause/{id}",           post(intel_root_cause))
+        .route("/intel/regressions",               get(intel_regressions))
+        .route("/intel/performance/{id}",           get(intel_performance))
+        .route("/ingest",                          post(ingest))
+        .route("/graph",                           get(get_graph))
+        .route("/replay/{id}",                     post(replay))
+        .route("/clusters",                        get(get_clusters))
+        .route("/nodes",                           get(list_nodes))
+        .route("/nodes/health",                    get(get_nodes_health))
+        .route("/clear",                           delete(clear_all))
+        .route("/security/alerts",                 get(get_security_alerts))
+        .route("/intelligence/failure-risks",      get(get_failure_risks))
         .layer(axum::middleware::from_fn(crate::auth::auth_middleware));
 
     Router::new()
         .nest("/api", api_router)
-        .route("/v1/traces",        post(otlp_ingress).layer(axum::middleware::from_fn(crate::auth::auth_middleware)))
-        .route("/ws/live",          get(ws_handler))
-        .route("/metrics",          get(|| async { crate::metrics::gather() }))
-        .route("/",                 get(serve_index))
+        .route("/v1/traces",   post(otlp_ingress).layer(axum::middleware::from_fn(crate::auth::auth_middleware)))
+        .route("/ws/live",     get(ws_handler))
+        .route("/metrics",     get(|| async { crate::metrics::gather() }))
+        .route("/",            get(serve_index))
         .layer(CorsLayer::permissive())
         .with_state(state)
 }
@@ -82,8 +89,16 @@ async fn get_trace(State(s): State<AppState>, Extension(ident): Extension<Option
 async fn ingest(State(s): State<AppState>, Extension(ident): Extension<Option<Identity>>, Json(payload): Json<IngestPayload>) -> impl IntoResponse {
     let tenant_id = ident.map(|i| i.tenant_id);
     let events = match payload {
-        IngestPayload::Single(e) => vec![e],
-        IngestPayload::Batch(v)  => v,
+        IngestPayload::Single(e) => {
+            tracing::info!("Ingest: Received single event for trace {}", e.trace_id);
+            vec![e]
+        },
+        IngestPayload::Batch(v)  => {
+            if !v.is_empty() {
+                tracing::info!("Ingest: Received batch of {} events for trace {}", v.len(), v[0].trace_id);
+            }
+            v
+        },
     };
 
     // Backpressure: Limit concurrent ingestion
@@ -140,9 +155,17 @@ async fn ingest(State(s): State<AppState>, Extension(ident): Extension<Option<Id
     }
 
     let events_len = local_events.len() as u64;
-    match s.db.ingest_events(local_events, tenant_id).await {
+    match s.db.ingest_events(local_events.clone(), tenant_id.clone()).await {
         Ok(_)  => {
-            crate::metrics::INGESTION_TOTAL.inc_by(events_len);
+            crate::metrics::INGESTION_TOTAL.inc_by(events_len as f64);
+            
+            // Phase 5.10 Security Analysis
+            if !local_events.is_empty() {
+                let analyzer = crate::analyzer::SecurityAnalyzer::new(s.db.clone());
+                let trace_id = local_events[0].trace_id;
+                let _ = analyzer.analyze_trace(trace_id, &local_events, tenant_id).await;
+            }
+
             StatusCode::OK.into_response()
         },
         Err(e) => {
@@ -302,6 +325,14 @@ async fn otlp_ingress(State(s): State<AppState>, Json(body): Json<serde_json::Va
                                 thread_id: None,
                                 http_request: None,
                                 db_query: None,
+                                tenant_id: None,
+                                event_id: None,
+                                memory_usage_bytes: None,
+                                fingerprint: None,
+                                is_folded: None,
+                                fold_count: None,
+                                version: None,
+                                environment: None,
                             };
                             events.push(ev);
                         }
@@ -313,9 +344,15 @@ async fn otlp_ingress(State(s): State<AppState>, Json(body): Json<serde_json::Va
     
     if !events.is_empty() {
         let evs = events.clone();
-        if let Err(e) = s.db.ingest_events(evs, None).await {
+        if let Err(e) = s.db.ingest_events(evs.clone(), None).await {
             return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
         }
+        
+        // Phase 5.10 Security Analysis
+        let analyzer = crate::analyzer::SecurityAnalyzer::new(s.db.clone());
+        let trace_id = events[0].trace_id;
+        let _ = analyzer.analyze_trace(trace_id, &events, None).await;
+
         for ev in events {
             if let Ok(json) = serde_json::to_string(&ev) {
                 s.ws.broadcast(json);
@@ -334,7 +371,7 @@ async fn list_comments(Path(id): Path<Uuid>, State(s): State<AppState>, Extensio
     }
 }
 
-async fn add_comment(Path(id): Path<Uuid>, State(s): State<AppState>, Extension(ident): Extension<Option<Identity>>, Json(mut payload): Json<serde_json::Value>) -> impl IntoResponse {
+async fn add_comment(Path(id): Path<Uuid>, State(s): State<AppState>, Extension(ident): Extension<Option<Identity>>, Json(payload): Json<serde_json::Value>) -> impl IntoResponse {
     let tenant_id = ident.as_ref().map(|i| i.tenant_id.clone());
     let user_id = ident.as_ref().map(|i| i.user_id.clone()).unwrap_or_else(|| "anonymous".into());
     
@@ -387,6 +424,74 @@ async fn update_assignment(Path(id): Path<Uuid>, State(s): State<AppState>, Exte
 
     match s.db.update_trace_metadata(id, None, assigned_to, tenant_id).await {
         Ok(_) => StatusCode::OK.into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn get_failure_risks(State(s): State<AppState>, Extension(ident): Extension<Option<Identity>>) -> impl IntoResponse {
+    let tenant_id = ident.map(|i| i.tenant_id);
+    match s.db.get_failure_risks(tenant_id).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn get_heatmap(Path(id): Path<Uuid>, State(s): State<AppState>, Extension(ident): Extension<Option<Identity>>) -> impl IntoResponse {
+    let tenant_id = ident.map(|i| i.tenant_id);
+    match s.db.get_trace_events(id, tenant_id).await {
+        Ok(events) => {
+            let heatmap = crate::models::StateHeatmap::calculate(&events);
+            Json(heatmap).into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn get_replay_snapshot(Path(id): Path<Uuid>, State(s): State<AppState>, Extension(ident): Extension<Option<Identity>>) -> impl IntoResponse {
+    let tenant_id = ident.map(|i| i.tenant_id);
+    match s.db.get_trace_events(id, tenant_id).await {
+        Ok(events) => {
+            let snapshot = crate::replay::ReplayManager::create_snapshot(id, &events);
+            Json(snapshot).into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn get_security_alerts(State(s): State<AppState>, Extension(ident): Extension<Option<Identity>>) -> impl IntoResponse {
+    let tenant_id = ident.map(|i| i.tenant_id);
+    match s.db.get_security_alerts(tenant_id).await {
+        Ok(alerts) => Json(alerts).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn get_nodes_health(State(s): State<AppState>) -> impl IntoResponse {
+    Json(s.cluster.get_all_agent_health().await)
+}
+
+async fn intel_root_cause(Path(id): Path<Uuid>, State(s): State<AppState>, Extension(ident): Extension<Option<Identity>>) -> impl IntoResponse {
+    let tenant_id = ident.map(|i| i.tenant_id);
+    let engine = crate::intel::IntelligenceEngine::new(s.db.clone());
+    match engine.analyze_root_cause(id, tenant_id).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn intel_regressions(State(s): State<AppState>, Extension(ident): Extension<Option<Identity>>) -> impl IntoResponse {
+    let tenant_id = ident.map(|i| i.tenant_id);
+    match s.db.get_regressions(tenant_id).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn intel_performance(Path(id): Path<Uuid>, State(s): State<AppState>, Extension(ident): Extension<Option<Identity>>) -> impl IntoResponse {
+    let tenant_id = ident.map(|i| i.tenant_id);
+    let engine = crate::intel::IntelligenceEngine::new(s.db.clone());
+    match engine.get_performance_tuning(id, tenant_id).await {
+        Ok(v) => Json(v).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }

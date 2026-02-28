@@ -99,22 +99,24 @@ type LocalVar struct {
 }
 
 type TraceEvent struct {
-	TraceID      string       `json:"trace_id"`
-	SpanID       string       `json:"span_id"`
-	ParentSpanID *string      `json:"parent_span_id"`
-	TimestampMs  int64        `json:"timestamp_ms"`
-	EventType    EventType    `json:"event_type"`
-	FunctionName string       `json:"function_name"`
-	Module       string       `json:"module"`
-	File         string       `json:"file"`
-	Line         int          `json:"line"`
-	Locals       []LocalVar   `json:"locals,omitempty"`
-	ErrorMessage *string      `json:"error_message,omitempty"`
-	DurationUs   *int64       `json:"duration_us,omitempty"`
-	Language     string       `json:"language"`
-	ThreadID     string       `json:"thread_id"`
-	HTTPRequest  *HTTPRequest `json:"http_request,omitempty"`
-	DBQuery      *DBQuery     `json:"db_query,omitempty"`
+	TraceID          string       `json:"trace_id"`
+	SpanID           string       `json:"span_id"`
+	ParentSpanID     *string      `json:"parent_span_id"`
+	TimestampMs      int64        `json:"timestamp_ms"`
+	EventType        EventType    `json:"event_type"`
+	FunctionName     string       `json:"function_name"`
+	Module           string       `json:"module"`
+	File             string       `json:"file"`
+	Line             int          `json:"line"`
+	Locals           []LocalVar   `json:"locals,omitempty"`
+	ErrorMessage     *string      `json:"error_message,omitempty"`
+	DurationUs       *int64       `json:"duration_us,omitempty"`
+	Language         string       `json:"language"`
+	ThreadID         string       `json:"thread_id"`
+	HTTPRequest      *HTTPRequest `json:"http_request,omitempty"`
+	DBQuery          *DBQuery     `json:"db_query,omitempty"`
+	EventID          string       `json:"event_id,omitempty"`
+	MemoryUsageBytes *uint64      `json:"memory_usage_bytes,omitempty"`
 }
 
 type HTTPRequest struct {
@@ -206,32 +208,34 @@ func Trace() func() {
 	startNs := time.Now().UnixNano()
 
 	global.enqueue(TraceEvent{
-		TraceID:      global.traceID,
-		SpanID:       spanID,
-		TimestampMs:  nowMs(),
-		EventType:    EventFunctionEnter,
-		FunctionName: fnName,
-		Module:       module,
-		File:         file,
-		Line:         line,
-		Language:     "go",
+		TraceID:          global.traceID,
+		SpanID:           spanID,
+		TimestampMs:      nowMs(),
+		EventType:        EventFunctionEnter,
+		FunctionName:     fnName,
+		Module:           module,
+		File:             file,
+		Line:             line,
+		Language:         "go",
+		MemoryUsageBytes: getHeapAlloc(),
 	})
 
 	return func() {
 		durUs := (time.Now().UnixNano() - startNs) / 1000
 		exitSpan := uuid.New().String()
 		global.enqueue(TraceEvent{
-			TraceID:      global.traceID,
-			SpanID:       exitSpan,
-			ParentSpanID: &spanID,
-			TimestampMs:  nowMs(),
-			EventType:    EventFunctionExit,
-			FunctionName: fnName,
-			Module:       module,
-			File:         file,
-			Line:         line,
-			DurationUs:   &durUs,
-			Language:     "go",
+			TraceID:          global.traceID,
+			SpanID:           exitSpan,
+			ParentSpanID:     &spanID,
+			TimestampMs:      nowMs(),
+			EventType:        EventFunctionExit,
+			FunctionName:     fnName,
+			Module:           module,
+			File:             file,
+			Line:             line,
+			DurationUs:       &durUs,
+			Language:         "go",
+			MemoryUsageBytes: getHeapAlloc(),
 		})
 	}
 }
@@ -250,15 +254,16 @@ func RecordPanic() {
 		}
 		errMsg := fmt.Sprintf("panic: %v", r)
 		global.enqueue(TraceEvent{
-			TraceID:      global.traceID,
-			SpanID:       uuid.New().String(),
-			TimestampMs:  nowMs(),
-			EventType:    EventException,
-			FunctionName: fnName,
-			File:         file,
-			Line:         line,
-			ErrorMessage: &errMsg,
-			Language:     "go",
+			TraceID:          global.traceID,
+			SpanID:           uuid.New().String(),
+			TimestampMs:      nowMs(),
+			EventType:        EventException,
+			FunctionName:     fnName,
+			File:             file,
+			Line:             line,
+			ErrorMessage:     &errMsg,
+			Language:         "go",
+			MemoryUsageBytes: getHeapAlloc(),
 		})
 		global.flush()
 		panic(r)
@@ -473,6 +478,10 @@ func (s *grpcSender) send(events []TraceEvent) sendResult {
 			dur := uint64(*ev.DurationUs)
 			pbEv.DurationUs = &dur
 		}
+		if ev.MemoryUsageBytes != nil {
+			pbEv.MemoryUsageBytes = ev.MemoryUsageBytes
+		}
+		pbEv.EventId = ev.EventID
 
 		_ = stream.Send(pbEv)
 	}
@@ -503,3 +512,10 @@ func sendEnvSnapshot(cfg Config) {
 }
 
 func nowMs() int64 { return time.Now().UnixMilli() }
+
+func getHeapAlloc() *uint64 {
+	var ms runtime.MemStats
+	runtime.ReadMemStats(&ms)
+	alloc := uint64(ms.HeapAlloc)
+	return &alloc
+}

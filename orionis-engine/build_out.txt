@@ -1,0 +1,26 @@
+   Compiling orionis-engine v0.1.0 (F:\proj_guides\Orionis\orionis-engine)
+warning: enum `TracingMode` is never used
+   --> src\models.rs:451:10
+    |
+451 | pub enum TracingMode {
+    |          ^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `http_addr` is never used
+  --> src\clustering.rs:64:12
+   |
+17 | impl ClusterManager {
+   | ------------------- method in this implementation
+...
+64 |     pub fn http_addr(&self) -> &str {
+   |            ^^^^^^^^^
+
+warning: function `get_identity` is never used
+   --> src\auth.rs:120:8
+    |
+120 | pub fn get_identity(req: &axum::extract::Request) -> Option<Identity> {
+    |        ^^^^^^^^^^^^
+
+warning: `orionis-engine` (bin "orionis-engine") generated 3 warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 23.63s

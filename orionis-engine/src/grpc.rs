@@ -3,10 +3,11 @@ use uuid::Uuid;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
+use tokio_stream::wrappers::ReceiverStream;
 
 use crate::store::DbHandle;
 use crate::ws::WsBroadcaster;
-use crate::models::{self, AgentLanguage, EventType, TraceEvent, LocalVar};
+use crate::models::{AgentLanguage, EventType, TraceEvent, LocalVar};
 
 pub mod proto {
     tonic::include_proto!("orionis");
@@ -105,7 +106,13 @@ impl proto::ingest_server::Ingest for IngestService {
                     duration_us: dq.duration_us,
                 }),
                 tenant_id: if msg.tenant_id.is_empty() { None } else { Some(msg.tenant_id.clone()) },
-                event_id: None,
+                event_id: if msg.event_id.is_empty() { None } else { Some(msg.event_id) },
+                memory_usage_bytes: msg.memory_usage_bytes,
+                fingerprint: None,
+                is_folded: None,
+                fold_count: None,
+                version: None,
+                environment: None,
             };
             ev.calculate_event_id();
 
@@ -135,5 +142,81 @@ impl proto::ingest_server::Ingest for IngestService {
             success: true,
             message: "Stream completed successfully".into(),
         }))
+    }
+}
+
+pub struct ControlService {
+    pub ingestion_limit: Arc<tokio::sync::Semaphore>,
+    pub cluster: Arc<crate::clustering::ClusterManager>,
+}
+
+#[tonic::async_trait]
+impl proto::control_server::Control for ControlService {
+    type HeartbeatStreamStream = ReceiverStream<Result<proto::ControlCommand, Status>>;
+
+    async fn heartbeat_stream(
+        &self,
+        request: Request<tonic::Streaming<proto::AgentHeartbeat>>,
+    ) -> Result<Response<Self::HeartbeatStreamStream>, Status> {
+        let mut in_stream = request.into_inner();
+        let (tx, rx) = mpsc::channel(4);
+        let ingestion_limit = self.ingestion_limit.clone();
+        let cluster = self.cluster.clone();
+
+        tokio::spawn(async move {
+            while let Some(msg_res) = in_stream.next().await {
+                match msg_res {
+                    Ok(hb) => {
+                        // Logic for Adaptive Sampling
+                        let mut mode = proto::TracingMode::ModeDev;
+                        let mut rate = 100;
+
+                        // If engine is under extreme backpressure, force SAFE mode
+                        if ingestion_limit.available_permits() < 50 {
+                            mode = proto::TracingMode::ModeSafe;
+                            rate = 50;
+                        }
+
+                        // If agent buffer is nearly full, force SAFE mode
+                        if hb.buffer_usage_percent > 80 {
+                            mode = proto::TracingMode::ModeSafe;
+                            rate = 20;
+                        }
+
+                        let cmd = proto::ControlCommand {
+                            mode: mode as i32,
+                            sampling_rate_percent: rate,
+                            kill_switch: false,
+                        };
+
+                        if let Err(_) = tx.send(Ok(cmd)).await {
+                            break;
+                        }
+
+                        // Update local health state
+                        let health = crate::models::AgentHealth {
+                            agent_id: hb.agent_id,
+                            hostname: hb.hostname,
+                            language: match hb.language {
+                                1 => crate::models::AgentLanguage::Python,
+                                2 => crate::models::AgentLanguage::Go,
+                                3 => crate::models::AgentLanguage::Rust,
+                                4 => crate::models::AgentLanguage::Cpp,
+                                _ => crate::models::AgentLanguage::Unknown,
+                            },
+                            buffer_usage_percent: hb.buffer_usage_percent,
+                            events_dropped: hb.events_dropped,
+                            active_spans: hb.active_spans,
+                            pid: hb.pid,
+                            last_heartbeat: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs(),
+                        };
+                        cluster.update_agent_health(health).await;
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+
+        Ok(Response::new(ReceiverStream::new(rx)))
     }
 }

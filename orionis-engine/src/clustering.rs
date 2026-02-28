@@ -2,12 +2,16 @@ use crate::models::{ClusterNode, NodeStatus};
 use crate::store::DbHandle;
 use crate::grpc::proto::{self, ingest_client::IngestClient};
 use tonic::transport::Channel;
+use uuid::Uuid;
+use std::time::{SystemTime, UNIX_EPOCH, Duration};
+use tokio::time::sleep;
 
 pub struct ClusterManager {
     db: DbHandle,
     node_id: String,
     http_addr: String,
     grpc_addr: String,
+    agent_health: std::sync::Arc<tokio::sync::RwLock<std::collections::HashMap<String, crate::models::AgentHealth>>>,
 }
 
 impl ClusterManager {
@@ -17,6 +21,7 @@ impl ClusterManager {
             node_id: Uuid::new_v4().to_string(),
             http_addr,
             grpc_addr,
+            agent_health: std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
         }
     }
 
@@ -60,11 +65,23 @@ impl ClusterManager {
         &self.http_addr
     }
 
-    pub async fn get_owner(&self, trace_id: uuid::Uuid) -> Option<ClusterNode> { // Changed trace_id type to uuid::Uuid and made async
-        let nodes = self.db.list_nodes().await.ok()?; // Changed to self.db.list_nodes().await
+    pub async fn get_owner(&self, trace_id: uuid::Uuid) -> Option<ClusterNode> {
+        let nodes = self.db.list_nodes().await.ok()?;
         if nodes.is_empty() { return None; }
 
-        let mut sorted_nodes = nodes;
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        // Only consider nodes seen in the last 30 seconds
+        let active_nodes: Vec<_> = nodes.into_iter()
+            .filter(|n| now >= n.last_seen && now - n.last_seen < 30)
+            .collect();
+
+        if active_nodes.is_empty() { return None; }
+
+        let mut sorted_nodes = active_nodes;
         sorted_nodes.sort_by(|a, b| a.node_id.cmp(&b.node_id));
 
         // Simple hash-based mapping
@@ -72,6 +89,16 @@ impl ClusterManager {
         let index = (hash % sorted_nodes.len() as u64) as usize;
         
         Some(sorted_nodes[index].clone())
+    }
+
+    pub async fn update_agent_health(&self, health: crate::models::AgentHealth) {
+        let mut lock = self.agent_health.write().await;
+        lock.insert(health.agent_id.clone(), health);
+    }
+
+    pub async fn get_all_agent_health(&self) -> Vec<crate::models::AgentHealth> {
+        let lock = self.agent_health.read().await;
+        lock.values().cloned().collect()
     }
 
     pub async fn forward_event(&self, node: &ClusterNode, event: crate::models::TraceEvent, tenant_id: Option<String>) -> anyhow::Result<()> {
@@ -136,6 +163,8 @@ impl ClusterManager {
                 duration_us: q.duration_us,
             }),
             tenant_id: tenant_id.unwrap_or_default(),
+            event_id: event.event_id.unwrap_or_default(),
+            memory_usage_bytes: event.memory_usage_bytes,
         };
 
         let stream = tokio_stream::iter(vec![proto_ev]);

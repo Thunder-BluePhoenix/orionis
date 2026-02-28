@@ -55,6 +55,8 @@ pub struct TraceEvent {
     pub language: String,
     pub thread_id: String,
     pub http_request: Option<HttpRequest>,
+    pub event_id: Option<String>,
+    pub memory_usage_bytes: Option<u64>,
 }
 
 // ── Senders ──────────────────────────────────────────────────────────────────
@@ -142,6 +144,8 @@ impl Sender for GrpcSender {
                         tenant_id: "".to_string(), // handled by API keys usually
                         http_request: None,
                         db_query: None,
+                        event_id: ev.event_id.unwrap_or_default(),
+                        memory_usage_bytes: ev.memory_usage_bytes,
                     };
                     pb_events.push(pb_ev);
                 }
@@ -329,6 +333,8 @@ pub fn install_panic_hook(ag: Arc<Agent>) {
             language: "rust".into(),
             thread_id: format!("{:?}", thread::current().id()),
             http_request: None,
+            event_id: None,
+            memory_usage_bytes: memory_stats::memory_stats().map(|s| s.physical_mem as u64),
         });
         ag.flush();
     }));
@@ -389,6 +395,8 @@ impl SpanGuard {
                 language: "rust".into(),
                 thread_id: format!("{:?}", thread::current().id()),
                 http_request: None,
+                event_id: None,
+                memory_usage_bytes: memory_stats::memory_stats().map(|s| s.physical_mem as u64),
             });
         }
         Self { span_id, fn_name: fn_name.into(), module: module.into(), file: file.into(), line, start: Instant::now() }
@@ -415,6 +423,8 @@ impl Drop for SpanGuard {
                 language: "rust".into(),
                 thread_id: format!("{:?}", thread::current().id()),
                 http_request: None,
+                event_id: None,
+                memory_usage_bytes: memory_stats::memory_stats().map(|s| s.physical_mem as u64),
             });
         }
     }

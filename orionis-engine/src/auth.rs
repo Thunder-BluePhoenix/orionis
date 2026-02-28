@@ -1,7 +1,7 @@
 use axum::{
     extract::Request,
     http::{StatusCode, header},
-    response::{IntoResponse, Response},
+    response::Response,
     middleware::Next,
 };
 use jsonwebtoken::{decode, DecodingKey, Validation, Algorithm};
@@ -22,25 +22,25 @@ pub struct Identity {
     pub role: String,
 }
 
-pub async fn auth_middleware(req: Request, next: Next) -> Result<Response, StatusCode> {
+pub async fn auth_middleware(mut req: Request, next: Next) -> Result<Response, StatusCode> {
     // 1. Try to get API Key (used by Agents to ingest traces)
-    if let Some(auth_header) = req.headers().get("X-Orionis-Api-Key") {
-        if let Ok(key_str) = auth_header.to_str() {
-            let valid_key = std::env::var("ORIONIS_API_KEY").unwrap_or_else(|_| "secret-agent-key".to_string());
-            if key_str == valid_key {
-                let tenant_id = req.headers().get("X-Tenant-Id")
-                    .and_then(|h| h.to_str().ok())
-                    .unwrap_or("default");
-                
-                let mut req = req;
-                req.extensions_mut().insert(Identity {
-                    user_id: "agent".to_string(),
-                    tenant_id: tenant_id.to_string(),
-                    role: "member".to_string(),
-                });
-                return Ok(next.run(req).await);
-            }
-        }
+    let api_key_check = req.headers().get("X-Orionis-Api-Key")
+        .and_then(|h| h.to_str().ok())
+        .map(|k| k == std::env::var("ORIONIS_API_KEY").unwrap_or_else(|_| "secret-agent-key".to_string()))
+        .unwrap_or(false);
+
+    if api_key_check {
+        let tenant_id = req.headers().get("X-Tenant-Id")
+            .and_then(|h| h.to_str().ok())
+            .unwrap_or("default")
+            .to_string();
+        
+        req.extensions_mut().insert(Some(Identity {
+            user_id: "agent".to_string(),
+            tenant_id: tenant_id,
+            role: "member".to_string(),
+        }));
+        return Ok(next.run(req).await);
     }
 
     // 2. Try to get JWT Bearer Token (used by Dashboard UI users)
@@ -56,6 +56,8 @@ pub async fn auth_middleware(req: Request, next: Next) -> Result<Response, Statu
         if std::env::var("ORIONIS_ENFORCE_AUTH").is_ok() {
             return Err(StatusCode::UNAUTHORIZED);
         }
+        
+        req.extensions_mut().insert(None::<Identity>);
         return Ok(next.run(req).await);
     };
 
@@ -74,8 +76,7 @@ pub async fn auth_middleware(req: Request, next: Next) -> Result<Response, Statu
             // In a real OIDC setup, we'd fetch JWKS for this kid from the OIDC provider's discovery endpoint.
             // For now, we provide a hook for OIDC validation.
             if let Ok(identity) = validate_oidc_token(token, &kid).await {
-                let mut req = req;
-                req.extensions_mut().insert(identity);
+                req.extensions_mut().insert(Some(identity));
                 return Ok(next.run(req).await);
             }
         }
@@ -87,13 +88,12 @@ pub async fn auth_middleware(req: Request, next: Next) -> Result<Response, Statu
         &Validation::new(Algorithm::HS256),
     ) {
         Ok(token_data) => {
-            let mut req = req;
             let identity = Identity {
                 user_id: token_data.claims.sub,
                 tenant_id: token_data.claims.tenant_id,
                 role: token_data.claims.role,
             };
-            req.extensions_mut().insert(identity);
+            req.extensions_mut().insert(Some(identity));
             Ok(next.run(req).await)
         }
         Err(_) => Err(StatusCode::UNAUTHORIZED),
@@ -118,5 +118,5 @@ async fn validate_oidc_token(_token: &str, _kid: &str) -> Result<Identity, Statu
 
 
 pub fn get_identity(req: &axum::extract::Request) -> Option<Identity> {
-    req.extensions().get::<Identity>().cloned()
+    req.extensions().get::<Option<Identity>>().cloned().flatten()
 }

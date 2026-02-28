@@ -18,12 +18,19 @@ pub trait StorageBackend: Send + Sync {
     async fn get_event_by_span_id(&self, span_id: Uuid, tenant_id: Option<String>) -> Result<Option<TraceEvent>>;
     async fn get_clusters(&self, tenant_id: Option<String>) -> Result<serde_json::Value>;
     async fn update_trace_ai(&self, trace_id: Uuid, summary: String, cluster_key: Option<String>) -> Result<()>;
+    async fn update_trace_intel(&self, trace_id: Uuid, root_cause: Option<String>, patch: Option<String>) -> Result<()>;
+    async fn get_regressions(&self, tenant_id: Option<String>) -> Result<serde_json::Value>;
     async fn register_node(&self, node: crate::models::ClusterNode) -> Result<()>;
     async fn list_nodes(&self) -> Result<Vec<crate::models::ClusterNode>>;
     async fn add_comment(&self, comment: crate::models::TraceComment, tenant_id: Option<String>) -> Result<()>;
     async fn get_comments(&self, trace_id: Uuid, tenant_id: Option<String>) -> Result<Vec<crate::models::TraceComment>>;
     async fn update_trace_metadata(&self, trace_id: Uuid, tags: Option<Vec<String>>, assigned_to: Option<String>, tenant_id: Option<String>) -> Result<()>;
     async fn cleanup_expired_data(&self, retention_days: u32) -> Result<()>;
+    async fn get_failure_risks(&self, tenant_id: Option<String>) -> Result<serde_json::Value>;
+
+    // Security & Health
+    async fn add_security_alert(&self, alert: crate::models::SecurityAlert, tenant_id: Option<String>) -> Result<()>;
+    async fn get_security_alerts(&self, tenant_id: Option<String>) -> Result<Vec<crate::models::SecurityAlert>>;
 }
 
 pub type DbHandle = Arc<dyn StorageBackend>;
@@ -34,6 +41,7 @@ const TRACES_TABLE: TableDefinition<&[u8; 16], &str> = TableDefinition::new("tra
 const EVENTS_TABLE: TableDefinition<(&[u8; 16], u64, &str), &str> = TableDefinition::new("events");
 const NODES_TABLE: TableDefinition<&str, &str> = TableDefinition::new("nodes"); // node_id -> json
 const COMMENTS_TABLE: TableDefinition<&[u8; 16], &str> = TableDefinition::new("comments"); // comment_id -> json
+const SECURITY_ALERTS_TABLE: TableDefinition<&[u8; 16], &str> = TableDefinition::new("security_alerts"); // alert_id -> json
 
 pub struct LocalStore {
     db: Arc<Database>,
@@ -42,6 +50,18 @@ pub struct LocalStore {
 impl LocalStore {
     pub fn new(path: &str) -> Result<Self> {
         let db = Database::builder().create(path)?;
+        
+        // Pre-initialize tables to avoid "TableDoesNotExist" errors on read-before-write
+        let write_txn = db.begin_write()?;
+        {
+            let _ = write_txn.open_table(TRACES_TABLE)?;
+            let _ = write_txn.open_table(EVENTS_TABLE)?;
+            let _ = write_txn.open_table(NODES_TABLE)?;
+            let _ = write_txn.open_table(COMMENTS_TABLE)?;
+            let _ = write_txn.open_table(SECURITY_ALERTS_TABLE)?;
+        }
+        write_txn.commit()?;
+
         Ok(Self { db: Arc::new(db) })
     }
 }
@@ -53,62 +73,108 @@ impl StorageBackend for LocalStore {
         {
             let mut traces_table = write_txn.open_table(TRACES_TABLE)?;
             let mut events_table = write_txn.open_table(EVENTS_TABLE)?;
+            
+            let mut summaries = std::collections::HashMap::new();
+            let mut trace_events_map = std::collections::HashMap::new();
 
-            for mut event in events {
-                event.tenant_id = tenant_id.clone();
-                let tid_bytes = event.trace_id.into_bytes();
-                let sid_bytes = event.span_id.into_bytes();
+            // Group events by trace for compression
+            let mut trace_groups: std::collections::HashMap<Uuid, Vec<TraceEvent>> = std::collections::HashMap::new();
+            for e in events {
+                trace_groups.entry(e.trace_id).or_default().push(e);
+            }
 
-                let summary_opt = {
-                    let guard = traces_table.get(&tid_bytes)?;
+            for (trace_id, trace_events) in trace_groups {
+                let mut trace_events = trace_events;
+                TraceSummary::calculate_span_fingerprints(&mut trace_events);
+                let compressed_events = TraceSummary::compress_timeline(trace_events);
+
+                let tid_bytes = trace_id.into_bytes();
+                
+                let summary = summaries.entry(trace_id).or_insert_with(|| {
+                    let guard = traces_table.get(&tid_bytes).unwrap_or(None);
                     if let Some(access) = guard {
-                        Some(serde_json::from_str::<TraceSummary>(access.value())?)
+                        serde_json::from_str::<TraceSummary>(access.value()).unwrap_or_else(|_| {
+                            TraceSummary {
+                                trace_id: trace_id,
+                                name: compressed_events[0].function_name.clone(),
+                                started_at: compressed_events[0].timestamp_ms,
+                                duration_ms: Some(0),
+                                has_error: false,
+                                language: compressed_events[0].language.clone(),
+                                event_count: 0,
+                                thread_ids: Vec::new(),
+                                ai_cluster_key: None,
+                                ai_summary: None,
+                                tenant_id: tenant_id.clone(),
+                                tags: Vec::new(),
+                                assigned_to: None,
+                                integrity_score: None,
+                                structural_hash: None,
+                                version: compressed_events[0].version.clone(),
+                                environment: compressed_events[0].environment.clone(),
+                                ai_root_cause: None,
+                                ai_patch_suggestion: None,
+                            }
+                        })
                     } else {
-                        None
+                        TraceSummary {
+                            trace_id: trace_id,
+                            name: compressed_events[0].function_name.clone(),
+                            started_at: compressed_events[0].timestamp_ms,
+                            duration_ms: Some(0),
+                            has_error: false,
+                            language: compressed_events[0].language.clone(),
+                            event_count: 0,
+                            thread_ids: Vec::new(),
+                            ai_cluster_key: None,
+                            ai_summary: None,
+                            tenant_id: tenant_id.clone(),
+                            tags: Vec::new(),
+                            assigned_to: None,
+                            structural_hash: None,
+                            integrity_score: None,
+                            version: compressed_events[0].version.clone(),
+                            environment: compressed_events[0].environment.clone(),
+                            ai_root_cause: None,
+                            ai_patch_suggestion: None,
+                        }
                     }
-                };
+                });
 
-                let mut summary = if let Some(s) = summary_opt {
-                    s
-                } else {
-                    TraceSummary {
-                        trace_id: event.trace_id,
-                        name: event.function_name.clone(),
-                        started_at: event.timestamp_ms,
-                        duration_ms: Some(0),
-                        has_error: false,
-                        language: event.language.clone(),
-                        event_count: 0,
-                        thread_ids: Vec::new(),
-                        ai_cluster_key: None,
-                        ai_summary: None,
-                        tenant_id: tenant_id.clone(),
-                        tags: Vec::new(),
-                        assigned_to: None,
+                for mut event in compressed_events {
+                    event.tenant_id = tenant_id.clone();
+                    
+                    summary.event_count += 1;
+                    if let Some(tid) = &event.thread_id {
+                        if !summary.thread_ids.contains(tid) {
+                            summary.thread_ids.push(tid.clone());
+                        }
                     }
-                };
+                    if let Some(err) = &event.error_message {
+                        summary.has_error = true;
+                        if summary.ai_cluster_key.is_none() {
+                            summary.ai_cluster_key = Some(format!("{}:{}:{}", err, event.file, event.line));
+                        }
+                    }
+                    if event.timestamp_ms > (summary.started_at + summary.duration_ms.unwrap_or(0)) {
+                        summary.duration_ms = Some(event.timestamp_ms - summary.started_at);
+                    }
 
-                summary.event_count += 1;
-                if let Some(tid) = &event.thread_id {
-                    if !summary.thread_ids.contains(tid) {
-                        summary.thread_ids.push(tid.clone());
-                    }
+                    let eid = event.event_id.as_deref().unwrap_or("");
+                    let event_json = serde_json::to_string(&event)?;
+                    events_table.insert((&tid_bytes, event.timestamp_ms, eid), event_json.as_str())?;
+                    
+                    trace_events_map.entry(trace_id).or_insert_with(Vec::new).push(event);
                 }
-                if let Some(err) = &event.error_message {
-                    summary.has_error = true;
-                    if summary.ai_cluster_key.is_none() {
-                        summary.ai_cluster_key = Some(format!("{}:{}:{}", err, event.file, event.line));
-                    }
-                }
-                if event.timestamp_ms > (summary.started_at + summary.duration_ms.unwrap_or(0)) {
-                    summary.duration_ms = Some(event.timestamp_ms - summary.started_at);
-                }
+            }
 
+            for (trace_id, mut summary) in summaries {
+                if let Some(evs) = trace_events_map.get(&trace_id) {
+                    summary.structural_hash = Some(TraceSummary::calculate_structural_hash(evs));
+                    summary.integrity_score = Some(TraceSummary::calculate_integrity_score(evs));
+                }
                 let summary_json = serde_json::to_string(&summary)?;
-                traces_table.insert(&tid_bytes, summary_json.as_str())?;
-                let event_json = serde_json::to_string(&event)?;
-                let eid = event.event_id.as_deref().unwrap_or("");
-                events_table.insert((&tid_bytes, event.timestamp_ms, eid), event_json.as_str())?;
+                traces_table.insert(&trace_id.into_bytes(), summary_json.as_str())?;
             }
         }
         write_txn.commit()?;
@@ -304,10 +370,15 @@ impl StorageBackend for LocalStore {
                 if summary.tenant_id.as_ref() != Some(tid) { continue; }
             } else if summary.tenant_id.is_some() { continue; }
 
-            if let Some(key) = &summary.ai_cluster_key {
-                clusters.entry(key.clone()).or_default().push(summary);
+            let key = summary.ai_cluster_key.as_ref().or(summary.structural_hash.as_ref());
+            if let Some(k) = key {
+                clusters.entry(k.clone()).or_default().push(summary);
+            } else {
+                tracing::warn!("Trace {} has no cluster key or structural hash", summary.trace_id);
             }
         }
+        
+        tracing::info!("get_clusters: found {} clusters across all traces", clusters.len());
         
         let out: Vec<serde_json::Value> = clusters.into_iter().map(|(key, traces)| {
             let count = traces.len();
@@ -328,26 +399,88 @@ impl StorageBackend for LocalStore {
         {
             let mut table = write_txn.open_table(TRACES_TABLE)?;
             let tid_bytes = trace_id.into_bytes();
-            let s_opt = {
+            let mut s: TraceSummary = {
                 let guard = table.get(&tid_bytes)?;
-                if let Some(access) = guard {
-                    Some(serde_json::from_str::<TraceSummary>(access.value())?)
-                } else {
-                    None
-                }
+                let access = guard.ok_or_else(|| anyhow::anyhow!("Trace not found"))?;
+                serde_json::from_str(access.value())?
             };
 
-            if let Some(mut s) = s_opt {
-                s.ai_summary = Some(summary);
-                if let Some(ck) = cluster_key {
-                    s.ai_cluster_key = Some(ck);
-                }
-                let summary_json = serde_json::to_string(&s)?;
-                table.insert(&tid_bytes, summary_json.as_str())?;
+            s.ai_summary = Some(summary);
+            if cluster_key.is_some() {
+                s.ai_cluster_key = cluster_key;
             }
+
+            let summary_json = serde_json::to_string(&s)?;
+            table.insert(&tid_bytes, summary_json.as_str())?;
         }
         write_txn.commit()?;
         Ok(())
+    }
+
+    async fn update_trace_intel(&self, trace_id: Uuid, root_cause: Option<String>, patch: Option<String>) -> Result<()> {
+        let write_txn = self.db.begin_write()?;
+        {
+            let mut table = write_txn.open_table(TRACES_TABLE)?;
+            let tid_bytes = trace_id.into_bytes();
+            let mut s: TraceSummary = {
+                let guard = table.get(&tid_bytes)?;
+                let access = guard.ok_or_else(|| anyhow::anyhow!("Trace not found"))?;
+                serde_json::from_str(access.value())?
+            };
+
+            if let Some(rc) = root_cause { s.ai_root_cause = Some(rc); }
+            if let Some(p) = patch { s.ai_patch_suggestion = Some(p); }
+
+            let summary_json = serde_json::to_string(&s)?;
+            table.insert(&tid_bytes, summary_json.as_str())?;
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    async fn get_regressions(&self, tenant_id: Option<String>) -> Result<serde_json::Value> {
+        let read_txn = self.db.begin_read()?;
+        let table = read_txn.open_table(TRACES_TABLE)?;
+        
+        let mut version_clusters: std::collections::HashMap<String, std::collections::HashSet<String>> = std::collections::HashMap::new();
+        
+        for item in table.iter()? {
+            let (_, val_access) = item?;
+            let summary: TraceSummary = serde_json::from_str(val_access.value())?;
+            
+            if let Some(tid) = &tenant_id {
+                if summary.tenant_id.as_ref() != Some(tid) { continue; }
+            } else if summary.tenant_id.is_some() { continue; }
+
+            if let (Some(v), Some(h)) = (summary.version, summary.structural_hash) {
+                version_clusters.entry(v).or_default().insert(h);
+            }
+        }
+        
+        // Find hashes that exist in a newer version but not in an older one (very simple detection)
+        let mut versions: Vec<String> = version_clusters.keys().cloned().collect();
+        versions.sort(); // Assumes semver-ish or alphabetical ordering is enough for v1
+        
+        let mut regressions = Vec::new();
+        for i in 1..versions.len() {
+            let prev = &versions[i-1];
+            let curr = &versions[i];
+            
+            let prev_hashes = &version_clusters[prev];
+            let curr_hashes = &version_clusters[curr];
+            
+            let new_hashes: Vec<_> = curr_hashes.difference(prev_hashes).collect();
+            if !new_hashes.is_empty() {
+                regressions.push(serde_json::json!({
+                    "from_version": prev,
+                    "to_version": curr,
+                    "new_execution_paths": new_hashes.len(),
+                    "hashes": new_hashes
+                }));
+            }
+        }
+        
+        Ok(serde_json::json!(regressions))
     }
 
     async fn register_node(&self, node: crate::models::ClusterNode) -> Result<()> {
@@ -470,6 +603,73 @@ impl StorageBackend for LocalStore {
         }
         write_txn.commit()?;
         Ok(())
+    }
+
+    async fn get_failure_risks(&self, tenant_id: Option<String>) -> Result<serde_json::Value> {
+        let read_txn = self.db.begin_read()?;
+        let table = read_txn.open_table(TRACES_TABLE)?;
+        
+        let mut stats: std::collections::HashMap<String, (u64, u64)> = std::collections::HashMap::new();
+        
+        for item in table.iter()? {
+            let (_, val_access) = item?;
+            let summary: TraceSummary = serde_json::from_str(val_access.value())?;
+            
+            if let Some(tid) = &tenant_id {
+                if summary.tenant_id.as_ref() != Some(tid) { continue; }
+            } else if summary.tenant_id.is_some() { continue; }
+
+            if let Some(hash) = &summary.structural_hash {
+                let (failed, total) = stats.entry(hash.clone()).or_insert((0, 0));
+                *total += 1;
+                if summary.has_error {
+                    *failed += 1;
+                }
+            }
+        }
+        
+        let out: Vec<serde_json::Value> = stats.into_iter().map(|(hash, (failed, total))| {
+            serde_json::json!({
+                "structural_hash": hash,
+                "failure_rate": if total > 0 { failed as f64 / total as f64 } else { 0.0 },
+                "total_runs": total,
+                "failed_runs": failed
+            })
+        }).collect();
+        
+        Ok(serde_json::json!(out))
+    }
+
+    async fn add_security_alert(&self, alert: crate::models::SecurityAlert, tenant_id: Option<String>) -> Result<()> {
+        let write_txn = self.db.begin_write()?;
+        {
+            let mut table = write_txn.open_table(SECURITY_ALERTS_TABLE)?;
+            let mut alert = alert;
+            alert.tenant_id = tenant_id;
+            let json = serde_json::to_string(&alert)?;
+            table.insert(&alert.alert_id.into_bytes(), json.as_str())?;
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    async fn get_security_alerts(&self, tenant_id: Option<String>) -> Result<Vec<crate::models::SecurityAlert>> {
+        let read_txn = self.db.begin_read()?;
+        let table = match read_txn.open_table(SECURITY_ALERTS_TABLE) {
+            Ok(t) => t,
+            Err(_) => return Ok(Vec::new()), // Table doesn't exist yet, return empty
+        };
+        let mut alerts = Vec::new();
+        for item in table.iter()? {
+            let (_, val_access) = item?;
+            let alert: crate::models::SecurityAlert = serde_json::from_str(val_access.value())?;
+            if let Some(tid) = &tenant_id {
+                if alert.tenant_id.as_ref() != Some(tid) { continue; }
+            } else if alert.tenant_id.is_some() { continue; }
+            alerts.push(alert);
+        }
+        alerts.sort_by_key(|a| std::cmp::Reverse(a.timestamp_ms));
+        Ok(alerts)
     }
 }
 

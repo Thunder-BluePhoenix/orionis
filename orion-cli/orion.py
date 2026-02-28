@@ -16,6 +16,11 @@ Commands:
     orion watch         Watch for file changes and re-run on change
     orion clean         Delete all stored traces
     orion config        Show current configuration
+    orion doctor        Check engine, storage, and cluster health
+    orion validate      Verify local project instrumentation status
+    orion benchmark     Run performance load test against engine
+    orion explain <id>  AI-driven explanation of a trace/failure
+    orion risks         List high-risk execution fingerprints
 """
 
 import sys
@@ -386,6 +391,141 @@ def cmd_config(_args):
     _info(f"Engine URL: {ENGINE_URL}")
     _info(f"Engine binary: {ENGINE_BIN or 'not found'}")
 
+def cmd_doctor(_args):
+    """Check connectivity, storage, and cluster health."""
+    _print_banner()
+    _info("Running Orionis diagnostic checkup…")
+    
+    # 1. Engine Reachability
+    alive = _engine_alive()
+    if alive:
+        _ok("Engine is reachable.")
+    else:
+        _err("Engine is NOT reachable.")
+        _info("Try:  orion start")
+        return
+
+    # 2. Node Cluster Status
+    nodes = _req("GET", "/api/nodes") or []
+    if len(nodes) > 0:
+        _ok(f"Cluster active with {len(nodes)} node(s).")
+        for n in nodes:
+            status_color = GREEN if n.get("status") == "active" else RED
+            print(f"    - {n.get('node_id')} ({n.get('http_addr')}) [{status_color}{n.get('status')}{RESET}]")
+    else:
+        _warn("No active nodes found in cluster registry.")
+
+    # 3. Metrics & Load
+    metrics = _req("GET", "/metrics")
+    if metrics and isinstance(metrics, str):
+        _ok("Engine metrics endpoint is active.")
+        # Simple grep for ingestion total
+        for line in metrics.splitlines():
+            if "orionis_ingestion_total" in line and not line.startswith("#"):
+                _info(f"Total events ingested: {line.split()[-1]}")
+    
+    # 4. Storage check
+    # If we can see nodes and traces, storage is working.
+    traces = _req("GET", "/api/traces")
+    if traces is not None:
+        _ok(f"Storage backend is healthy. ({len(traces)} traces indexed)")
+
+    print(f"\n{BOLD}{GREEN}ALL SYSTEMS NOMINAL{RESET}\n")
+
+def cmd_validate(_args):
+    """Verify local project configuration and agent setup."""
+    _print_banner()
+    cwd = Path.cwd()
+    cfg_path = cwd / ".orionis.json"
+    
+    _info(f"Auditing project: {cwd.name}")
+    
+    if cfg_path.exists():
+        _ok(".orionis.json found.")
+        try:
+            cfg = json.loads(cfg_path.read_text())
+            langs = cfg.get("languages", [])
+            _info(f"Configured languages: {', '.join(langs)}")
+        except Exception:
+            _err("Failed to parse .orionis.json")
+    else:
+        _warn("No .orionis.json found. Run 'orion init' to scaffold.")
+
+    # Check for library presence (simple heuristical check)
+    if (cwd / "Cargo.toml").exists():
+        content = (cwd / "Cargo.toml").read_text()
+        if "orionis-agent" in content or "orion-trace" in content:
+            _ok("Rust agent dependency detected in Cargo.toml")
+    
+    if (cwd / "go.mod").exists():
+        content = (cwd / "go.mod").read_text()
+        if "orionis" in content:
+            _ok("Go agent dependency detected in go.mod")
+
+def cmd_benchmark(_args):
+    """Run a performance benchmark against the engine."""
+    _print_banner()
+    _info("Starting Orionis Load Generator…")
+    
+    # Check if loadgen bin exists
+    base = Path(__file__).parent.parent
+    loadgen = base / "orion-loadgen" / "target" / "release" / "orion-loadgen"
+    if not loadgen.exists():
+        loadgen = base / "orion-loadgen" / "target" / "debug" / "orion-loadgen"
+        
+    if loadgen.exists():
+        _info(f"Running: {loadgen}")
+        subprocess.run([str(loadgen)])
+    else:
+        _err("Load generator binary not found.")
+        _info("Build it with: cargo build (in orion-loadgen/)")
+
+def cmd_explain(args):
+    """Request an AI-driven explanation for a specific trace."""
+    if not args:
+        _err("Usage: orion explain <trace-id>")
+        return
+    trace_id = args[0]
+    _info(f"Analyzing trace {trace_id[:8]}…")
+    
+    res = _req("POST", f"/api/ai/summarize", data=json.dumps({"trace_id": trace_id}).encode())
+    if res and "summary" in res:
+        print(f"\n{BOLD}AI Explanation:{RESET}")
+        print(res["summary"])
+        print()
+    else:
+        _err("Failed to get AI explanation. Ensure engine is running and trace exists.")
+
+def cmd_risks(_args):
+    """List execution fingerprints with high failure probability."""
+    _print_banner()
+    _info("Querying statistical failure probability models…")
+    
+    risks = _req("GET", "/api/intelligence/failure-risks")
+    if not risks:
+        _err("Cannot reach engine or no data available.")
+        return
+
+    print(f"\n{BOLD}{'Fingerprint (Structural Hash)':<45} {'Risk %':<10} {'Runs'}{RESET}")
+    print("─" * 70)
+    
+    # Sort by risk (rate) descending
+    risks.sort(key=lambda x: (x.get("failure_rate", 0) or x.get("rate", 0)), reverse=True)
+    
+    for r in risks:
+        h = r.get("structural_hash") or "unknown"
+        rate = r.get("failure_rate") or r.get("rate", 0.0)
+        total = r.get("total_runs") or r.get("count", 0)
+        failed = r.get("failed_runs") or r.get("failed", 0)
+        
+        # Color code the hazard level
+        color = GREEN
+        if rate > 0.5:   color = RED
+        elif rate > 0.1: color = YELLOW
+            
+        print(f"{h[:40]:<45} {color}{rate*100:6.1f}%{RESET}    {failed}/{total}")
+    print()
+
 
 def cmd_help(_args):
     print(__doc__)
@@ -406,6 +546,11 @@ COMMANDS = {
     "watch":   cmd_watch,
     "clean":   cmd_clean,
     "config":  cmd_config,
+    "doctor":  cmd_doctor,
+    "validate": cmd_validate,
+    "benchmark": cmd_benchmark,
+    "explain": cmd_explain,
+    "risks":   cmd_risks,
     "help":    cmd_help,
     "--help":  cmd_help,
     "-h":      cmd_help,

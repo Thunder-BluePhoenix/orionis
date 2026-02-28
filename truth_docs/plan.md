@@ -325,37 +325,64 @@ orion config                         # Show/edit configuration
 
 ---
 
-### Phase 5 — Final Product: Orionis Intelligence Platform (Months 22–27)
-**Goal: The complete vision. Orionis as the developer operating system layer.**
+### Phase 5 — Final Product: Orionis v2.0 (Months 25–30)
+**Goal: Deep state analysis, deterministic replay, and measurable trust.**
 
 | Feature | Description |
 |---|---|
-| Auto code patch suggestions | AI analyzes trace + variable state → proposes exact code fix |
-| Security anomaly detection | Detects runtime intrusion patterns, abnormal execution paths |
-| Regression detection | Auto-compare traces across releases — detect newly broken paths |
-| Performance optimization AI | AI identifies hot paths, suggests algorithmic improvements from flamegraph data |
-| Production crash auto-replay | Replay real production failure in isolated sandbox with full fidelity |
-| Failure simulation | Inject failure states into replay to test system resilience |
-| Memory leak detection | Track heap allocation diffs per span across traces |
-| Orionis Cloud | Fully managed hosted version — SaaS tier (free / paid / enterprise) |
-| Plugin ecosystem | Public SDK for community agents, analyzers, exporters, and IDE integrations |
+| **Deterministic Replay Mode** | Freeze time, mock network/DB, isolate side-effects → Replay production failures with total fidelity in sandbox |
+| **Execution Fingerprinting** | Structural hashing of execution graphs → cluster identical paths independent of variable values |
+| **Span-Level State Heatmap**| Visual mutation intensity map: variable deltas, memory growth, object expansion per function |
+| **Adaptive Sampling Engine** | Auto-escalate to FULL capture on anomaly; downgrade to SAFE under pressure |
+| **Trace Integrity Score** | Reliability metric for each trace: completeness, ordering, dedupe confidence |
+| **Failure Probability Estimator**| Statistical ranking of unstable modules & risky execution paths (non-LLM) |
+| **Agent Self-Health Telemetry** | Agent buffer pressure, throttle state, dropped events visible in dashboard |
+| **Timeline Compression Engine** | Structural graph compression to reduce storage pressure and accelerate replay |
+| **Practical Runtime Security**| Detect abnormal control flow, privilege escalation paths, suspicious env mutations |
+| **Developer Ergonomics CLI Layer**| `orion doctor`, `orion validate`, `orion benchmark`, `orion explain` |
 
-**v2.0 — Final Product State:**
-- ✅ All 4 language agents: Python, Go, Rust, C++ — stable, maintained, benchmarked
-- ✅ `orion` CLI — complete command suite for all workflows
-- ✅ Full time-travel debugging — state replay at any timestamp, step backward/forward
-- ✅ Cross-service distributed trace with causal chain visualization
-- ✅ Flamegraph + async lane + DB query lens all unified in one UI
-- ✅ AI layer: summarizer + root cause + code patch suggestions
-- ✅ Security + regression + memory anomaly detection
-- ✅ HTTP request replay + failure simulation sandbox
-- ✅ Team collaboration: annotations, assignments, shareable trace links
-- ✅ Enterprise cluster (Docker / Kubernetes) with ClickHouse + RBAC + SSO
-- ✅ CI/CD integration (GitHub Actions, GitLab)
-- ✅ OpenTelemetry import/export compatibility
-- ✅ Open-source core (Apache 2.0) + commercial enterprise tier
-- ✅ Active open-source community + plugin ecosystem
-- ✅ Competes directly with Datadog APM, Sentry, Jaeger — at deeper execution layer
+**v2.0 — Deep Core State:**
+- ✅ Deterministic time-travel debugging with side-effect mocking
+- ✅ Execution graph fingerprinting & structural clustering
+- ✅ State mutation heatmap visualization
+- ✅ Adaptive sampling for high-load environments
+- ✅ Trace integrity scoring & measurable trust
+- ✅ Statistical failure probability modeling
+- ✅ Agent self-telemetry & buffer visibility
+- ✅ Timeline compression for scalable storage
+- ✅ Runtime graph-based security detection
+- ✅ Full CLI health & benchmarking suite
+- ✅ Enterprise cluster remains stable & hardened
+
+---
+
+### Phase 5.5 — Intelligence Platform Expansion (Months 31–36)
+**Goal: Expand Orionis into a complete developer intelligence platform, powered by the deterministic core.**
+
+| Feature | Description |
+|---|---|
+| **AI Root Cause & Patch Suggestions** | AI analyzes trace + fingerprint → propose contextual code fixes |
+| **Regression Detection Engine** | Auto-compare traces across releases → detect new failure paths |
+| **Performance Optimization AI** | Analyze flamegraph + state heatmap → suggest algorithmic improvements |
+| **Production Crash Auto-Replay** | Replay real production failure in isolated sandbox with deterministic inputs |
+| **Failure Simulation Engine** | Inject failure states during replay to test resilience |
+| **Memory Leak Detection** | Track heap allocation diffs across spans and traces |
+| **Orionis Cloud** | Fully managed SaaS tier (Free / Pro / Enterprise) |
+| **Plugin Ecosystem SDK** | Public SDK for analyzers, exporters, language agents, IDE integrations |
+| **Collaboration Intelligence** | AI-assisted trace annotation, shared investigation context |
+
+**v2.5 — Orionis Intelligence Platform:**
+- ✅ All 7 language agents stable & backpressure-aware
+- ✅ Deterministic replay + fingerprinting + clustering
+- ✅ AI summarizer + root cause + patch suggestions
+- ✅ Regression + performance + memory anomaly detection
+- ✅ Failure simulation sandbox
+- ✅ Adaptive sampling in production
+- ✅ Enterprise cluster with ClickHouse + RBAC + SSO
+- ✅ Open-source core (Apache 2.0) + Commercial Enterprise tier
+- ✅ Orionis Cloud SaaS
+- ✅ Plugin ecosystem & IDE integrations
+- ✅ Competes with Datadog / Sentry / Jaeger — at deeper execution layer
 
 ---
 
@@ -363,16 +390,17 @@ orion config                         # Show/edit configuration
 
 | Phase | Months | Version | Key Unlock |
 |---|---|---|---|
-| Phase 1 — Foundation | 1–6 | v0.1 | All 7 agents Day 1 (Python, Go, Rust, C++, C, Node.js, Java), `orion` CLI, test integration, trace export |
-| Phase 2 — Cross-Service | 7–11 | v0.2 | Cross-service graph, flamegraph, HTTP replay, async viz, OTEL |
-| Phase 3 — AI Intelligence | 12–16 | v0.3 | AI summarizer + root cause, DB lens, diff mode, benchmarked |
-| Phase 4 — Enterprise | 17–21 | v1.0 | Cluster, ClickHouse, SSO/RBAC, team collab, CI/CD |
-| Phase 4.5 — Reliability | 22–24 | v1.1 | Durable WAL, Idempotency, Backpressure, Benchmarking |
-| Phase 5 — Final Product | 25–30 | v2.0 | Full platform, AI patches, crash replay, cloud, plugin ecosystem |
+| Phase 1 — Foundation | 1–6 | v0.1 | All 7 agents Day 1, CLI, UI, local storage |
+| Phase 2 — Cross-Service | 7–11 | v0.2 | Cross-service graph, flamegraph, HTTP replay, gRPC |
+| Phase 3 — AI Intelligence | 12–16 | v0.3 | AI summarizer + root cause, DB lens, diff mode |
+| Phase 4 — Enterprise | 17–21 | v1.0 | Cluster, ClickHouse, SSO/RBAC, team collab |
+| Phase 4.5 — Reliability | 22–24 | v1.1 | Durable WAL, Idempotency, Backpressure |
+| Phase 5 — Core v2.0 | 25–30 | v2.0 | Deterministic Replay, State Heatmaps, Fingerprinting |
+| Phase 5.5 — Intel v2.5 | 31–36 | v2.5 | AI Patches, Regression Engine, Cloud, Plugins |
 
 ---
 
-## Long-Term Expansion (Post v2.0)
+## Long-Term Expansion (Post v2.5)
 
 | Feature | Description |
 |---|---|
@@ -472,9 +500,14 @@ Things confirmed for correct phases but not in Phase 1:
 | Real-time observability metrics (/metrics) | Phase 4.5 |
 | `orion-loadgen` Benchmarking Tool | Phase 4.5 |
 | Memory heap allocation tracking per span | Phase 5 |
+| Deterministic Replay Mode (Mocking/Time-freeze) | Phase 5 |
+| Adaptive Sampling Engine | Phase 5 |
+| Trace Integrity Scoring | Phase 5 |
+| Agent Self-Health Telemetry | Phase 5 |
+| Execution Graph Fingerprinting | Phase 5 |
+| AI code patch suggestions | Phase 5 |
+| Practical Runtime Security | Phase 5 |
 | Team annotations + trace sharing | Phase 4 |
-| Production crash sandbox replay | Phase 5 |
-| Security / regression anomaly detection | Phase 5 |
 | IDE plugins — VS Code + JetBrains | Post v2.0 |
 | Kotlin/Scala/Ruby/PHP agents | Post v2.0 |
 | WASM agent | Post v2.0 |

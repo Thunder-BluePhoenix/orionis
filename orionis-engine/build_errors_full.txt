@@ -1,0 +1,50 @@
+﻿cargo :     Checking orionis-engine v0.1.0 
+(F:\proj_guides\Orionis\orionis-engine)
+At line:1 char:1
++ cargo check -p orionis-engine 
+--message-format=short 2>&1 | Out-File  ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecifi    
+ed: (    Checking or...orionis-engin    
+e):String) [], RemoteException
+    + FullyQualifiedErrorId : NativeComm    
+andError
+ 
+src\store_clickhouse.rs:1:5: warning: 
+unused import: `std::sync::Arc`
+src\store_clickhouse.rs:2:22: warning: 
+unused import: `Context`
+src\store_clickhouse.rs:8:47: warning: 
+unused import: `SecurityAlert`
+src\server.rs:13:13: warning: unused 
+import: `self`
+src\auth.rs:4:16: warning: unused import: 
+`IntoResponse`
+src\grpc.rs:5:31: warning: unused import: 
+`Stream`
+src\grpc.rs:10:21: warning: unused import: 
+`self`
+src\analyzer.rs:1:62: warning: unused 
+import: `Trace`
+src\analyzer.rs:6:5: warning: unused 
+import: `serde_json`
+src\server.rs:362:123: warning: variable 
+does not need to be mutable
+src\store_clickhouse.rs:633:40: 
+error[E0599]: no method named `inserter` 
+found for struct `clickhouse::Client` in 
+the current scope
+src\models.rs:225:13: warning: variable 
+does not need to be mutable
+src\models.rs:225:13: warning: unused 
+variable: `event_map`: help: if this is 
+intentional, prefix it with an underscore: 
+`_event_map`
+src\wal.rs:76:13: warning: variable does 
+not need to be mutable
+warning: `orionis-engine` (bin 
+"orionis-engine") generated 13 warnings
+error: could not compile `orionis-engine` 
+(bin "orionis-engine") due to 1 previous 
+error; 13 warnings emitted

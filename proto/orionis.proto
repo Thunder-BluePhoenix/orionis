@@ -16,6 +16,34 @@ message IngestResponse {
   string message = 2;
 }
 
+// Service for agent control and health
+service Control {
+  // Bi-directional stream for heartbeats and sampling commands
+  rpc HeartbeatStream (stream AgentHeartbeat) returns (stream ControlCommand);
+}
+
+message AgentHeartbeat {
+  string agent_id = 1;
+  string hostname = 2;
+  AgentLanguage language = 3;
+  uint64 buffer_usage_percent = 4;
+  uint64 events_dropped = 5;
+  uint64 active_spans = 6;
+  string pid = 7;
+}
+
+message ControlCommand {
+  TracingMode mode = 1;
+  uint32 sampling_rate_percent = 2; // 0-100
+  bool kill_switch = 3;            // Emergency stop tracing
+}
+
+enum TracingMode {
+  MODE_DEV = 0;   // Capture everything
+  MODE_SAFE = 1;  // No locals, sampled
+  MODE_ERROR = 2; // Only capture on exception
+}
+
 // Mirroring the REST models.rs
 message TraceEvent {
   string trace_id = 1;         // UUID string
@@ -35,6 +63,8 @@ message TraceEvent {
   HttpRequest http_request = 15;
   DbQuery db_query = 16;
   string tenant_id = 17;
+  string event_id = 18;
+  optional uint64 memory_usage_bytes = 19;
 }
 
 message HttpRequest {
